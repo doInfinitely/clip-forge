@@ -27,7 +27,17 @@
     ],
     "asar": true,
     "mac": {
-      "category": "public.app-category.video"
+      "category": "public.app-category.video",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSCameraUsageDescription": "ClipForge needs access to your camera to record video and create Picture-in-Picture content.",
+        "NSMicrophoneUsageDescription": "ClipForge needs access to your microphone to record audio for your videos.",
+        "NSScreenCaptureUsageDescription": "ClipForge needs to capture your screen to record screen videos and create content.",
+        "NSAppleEventsUsageDescription": "ClipForge uses AppleEvents for advanced functionality."
+      }
     },
     "win": {
       "target": [

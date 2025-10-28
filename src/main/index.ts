@@ -38,9 +38,7 @@ async function createWindow() {
     height: 800,
     show: false, // show after content is ready
     webPreferences: {
-      preload: app.isPackaged
-        ? path.join(__dirname, '../preload/index.js')
-        : path.join(__dirname, '../preload/index.mjs'),
+      preload: path.join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
