@@ -2,6 +2,7 @@
   "name": "clipforge",
   "private": true,
   "version": "0.1.0",
+  "author": "Remy Ochei",
   "type": "module",
   "main": "out/main/index.js",
   "description": "ClipForge – Desktop video editor MVP (Electron + React + FFmpeg WASM)",
@@ -11,15 +12,18 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "npm run build && electron-builder"
   },
   "build": {
     "appId": "com.clipforge.app",
+    "asarUnpack": ["**/node_modules/ffmpeg-static/**"],
     "files": [
-      "dist/**",
+      "out/**",
+      "dist/renderer/**",
       "node_modules/**",
       "package.json"
     ],
+    "asar": true,
     "mac": {
       "category": "public.app-category.video"
     },

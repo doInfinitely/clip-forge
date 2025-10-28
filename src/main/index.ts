@@ -2,14 +2,19 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import fsSync from 'node:fs'      // add sync for exists check
+import fsSync from 'node:fs'
 import { spawn } from 'node:child_process'
 import os from 'node:os'
 import { createRequire } from 'node:module'
 
 // ✅ Use a differently named require so we don't redeclare `require`
 const nodeRequire = createRequire(import.meta.url)
-const ffmpegPath = (nodeRequire('ffmpeg-static') as string) || ''
+const ffmpegPathRaw = (nodeRequire('ffmpeg-static') as string) || ''
+// make sure we point to the unpacked copy in production
+const ffmpegPath =
+  app.isPackaged
+    ? ffmpegPathRaw.replace('app.asar', 'app.asar.unpacked')
+    : ffmpegPathRaw
 
 if (!ffmpegPath || !fsSync.existsSync(ffmpegPath)) {
   console.error('[main] ffmpeg-static path not found:', ffmpegPath)
@@ -47,8 +52,21 @@ async function createWindow() {
     await win.loadURL(process.env['ELECTRON_RENDERER_URL']!)
     // win.webContents.openDevTools()
   } else {
-    // 👇 load the built renderer html
-    await win.loadFile(path.join(__dirname, '../renderer/index.html'))
+    // 👇 load the built renderer html - try multiple possible locations
+    const candidates = [
+      // when renderer is under dist/renderer
+      path.join(__dirname, '../../dist/renderer/index.html'),
+      // when electron-vite outputs renderer next to main
+      path.join(__dirname, '../renderer/index.html'),
+      // fallback
+      path.join(__dirname, '../../renderer/index.html'),
+    ]
+    const prodIndex = candidates.find(p => fsSync.existsSync(p))
+    console.log('[main] loadFile candidate hit:', prodIndex)
+    if (!prodIndex) {
+      throw new Error('Renderer index.html not found in expected locations.')
+    }
+    await win.loadFile(prodIndex)
   }
 }
 

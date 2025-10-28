@@ -10,7 +10,8 @@ const __filename = import.meta.filename;
 const __dirname = import.meta.dirname;
 const require2 = __cjs_mod__.createRequire(import.meta.url);
 const nodeRequire = createRequire(import.meta.url);
-const ffmpegPath = nodeRequire("ffmpeg-static") || "";
+const ffmpegPathRaw = nodeRequire("ffmpeg-static") || "";
+const ffmpegPath = app.isPackaged ? ffmpegPathRaw.replace("app.asar", "app.asar.unpacked") : ffmpegPathRaw;
 if (!ffmpegPath || !fsSync.existsSync(ffmpegPath)) {
   console.error("[main] ffmpeg-static path not found:", ffmpegPath);
 } else {
@@ -39,7 +40,20 @@ async function createWindow() {
   if (!app.isPackaged) {
     await win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
   } else {
-    await win.loadFile(path.join(__dirname, "../renderer/index.html"));
+    const candidates = [
+      // when renderer is under dist/renderer
+      path.join(__dirname, "../../dist/renderer/index.html"),
+      // when electron-vite outputs renderer next to main
+      path.join(__dirname, "../renderer/index.html"),
+      // fallback
+      path.join(__dirname, "../../renderer/index.html")
+    ];
+    const prodIndex = candidates.find((p) => fsSync.existsSync(p));
+    console.log("[main] loadFile candidate hit:", prodIndex);
+    if (!prodIndex) {
+      throw new Error("Renderer index.html not found in expected locations.");
+    }
+    await win.loadFile(prodIndex);
   }
 }
 app.whenReady().then(createWindow);
