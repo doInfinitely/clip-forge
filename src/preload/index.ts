@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('clipforge', {
   projectLoad: () => ipcRenderer.invoke('project-load'),
   getDesktopSources: (opts?: { types?: Array<'screen'|'window'> }) =>
     ipcRenderer.invoke('get-desktop-sources', opts),
+  importPaths: (paths: string[]) => ipcRenderer.invoke('import-paths', paths),
 })
 
 declare global {
@@ -35,6 +36,7 @@ declare global {
       getDesktopSources: (opts?: { types?: Array<'screen'|'window'> }) => Promise<Array<{
         id: string; name: string; thumbnail: string | null
       }>>
+      importPaths: (paths: string[]) => Promise<string[]>
     }
   }
 }

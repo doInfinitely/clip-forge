@@ -2,7 +2,18 @@
 import React, { useEffect, useRef, useState } from 'react'
 import TimelineCanvas, { Clip } from './components/TimelineCanvas'
 import RecordingPanel from './components/RecordingPanel'
+import MediaLibrary from './components/MediaLibrary'
 import { nanoid } from 'nanoid'
+
+type LibraryItem = {
+  id: string
+  name: string
+  path: string
+  duration: number
+  width?: number
+  height?: number
+  thumb?: string  // data URL
+}
 
 type Mime = 'video/mp4' | 'video/quicktime' | 'video/webm' | 'video/x-matroska'
 const mimeFor = (p: string): Mime => {
@@ -24,9 +35,11 @@ export default function App() {
   const [working, setWorking] = useState<string>('')
   const [progress, setProgress] = useState<string>('')
 
-  // timeline data
-  const [clips, setClips] = useState<Clip[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  // timeline data - tracks[0] = Main, tracks[1] = Overlay
+  const [tracks, setTracks] = useState<Clip[][]>([[], []])
+  const [activeTrack, setActiveTrack] = useState<0|1>(0)
+  const [selected, setSelected] = useState<{track: 0|1, id: string} | null>(null)
+  const [library, setLibrary] = useState<LibraryItem[]>([])
   const [pxPerSec, setPxPerSec] = useState(() => {
     const saved = localStorage.getItem('clipforge_pxPerSec')
     return saved ? Number(saved) : 80
@@ -71,8 +84,9 @@ export default function App() {
     if (window.clipforge?.projectLoad) {
       // @ts-expect-error preload
       window.clipforge.projectLoad()?.then((p: any) => {
-        if (p?.clips) setClips(p.clips)
+        if (p?.tracks) setTracks(p.tracks)
         if (p?.pxPerSec) setPxPerSec(p.pxPerSec)
+        if (p?.library) setLibrary(p.library)
       })
     }
   }, [])
@@ -82,9 +96,9 @@ export default function App() {
     localStorage.setItem('clipforge_pxPerSec', String(pxPerSec))
   }, [pxPerSec])
 
-  // Autosave project when clips or zoom changes
+  // Autosave project when tracks, library, or zoom changes
   useEffect(() => {
-    const payload = { clips, pxPerSec }
+    const payload = { tracks, library, pxPerSec }
     // best-effort debounce-ish save
     const t = setTimeout(() => {
       // @ts-expect-error preload
@@ -94,7 +108,7 @@ export default function App() {
       }
     }, 400)
     return () => clearTimeout(t)
-  }, [clips, pxPerSec])
+  }, [tracks, library, pxPerSec])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -111,29 +125,41 @@ export default function App() {
       }
 
       // [ = nudge In by -0.05s
-      if (e.key === '[' && selectedId) {
+      if (e.key === '[' && selected) {
         e.preventDefault()
-        setClips(prev => prev.map(c => {
-          if (c.id !== selectedId) return c
-          const newIn = Math.max(0, c.in - 0.05)
-          return { ...c, in: Math.min(newIn, c.out - 0.05) }
-        }))
+        const t = selected.track
+        const id = selected.id
+        setTracks(prev => {
+          const copy = prev.map(r => r.slice()) as Clip[][]
+          copy[t] = copy[t].map(c => {
+            if (c.id !== id) return c
+            const newIn = Math.max(0, c.in - 0.05)
+            return { ...c, in: Math.min(newIn, c.out - 0.05) }
+          })
+          return copy
+        })
         return
       }
 
       // ] = nudge Out by +0.05s
-      if (e.key === ']' && selectedId) {
+      if (e.key === ']' && selected) {
         e.preventDefault()
-        setClips(prev => prev.map(c => {
-          if (c.id !== selectedId) return c
-          const newOut = Math.min(c.duration, c.out + 0.05)
-          return { ...c, out: Math.max(newOut, c.in + 0.05) }
-        }))
+        const t = selected.track
+        const id = selected.id
+        setTracks(prev => {
+          const copy = prev.map(r => r.slice()) as Clip[][]
+          copy[t] = copy[t].map(c => {
+            if (c.id !== id) return c
+            const newOut = Math.min(c.duration, c.out + 0.05)
+            return { ...c, out: Math.max(newOut, c.in + 0.05) }
+          })
+          return copy
+        })
         return
       }
 
       // Backspace = delete selected
-      if (e.key === 'Backspace' && selectedId) {
+      if (e.key === 'Backspace' && selected) {
         e.preventDefault()
         deleteSelected()
         return
@@ -142,21 +168,24 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedId, clips]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected, tracks]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // derive selected clip + local time mapping
+  // derive selected clip + local time mapping (for active track)
+  // Using absolute positioning now
   const sequenceSpans = (() => {
-    let acc = 0
-    const arr = clips.map(c => {
+    const arrTrack = tracks[activeTrack]
+    const arr = arrTrack.map(c => {
       const len = Math.max(0.05, c.out - c.in)
-      const start = acc
-      acc += len
+      const start = c.startTime ?? 0
       return { id: c.id, start, len, clip: c }
     })
-    return { arr, total: acc }
+    const total = arr.length > 0 ? Math.max(...arr.map(b => b.start + b.len)) : 0
+    return { arr, total }
   })()
 
-  const selectedClip = clips.find(c => c.id === selectedId) || null
+  const selectedClip = selected
+    ? tracks[selected.track].find(c => c.id === selected.id) || null
+    : null
 
   // absTime -> selected clip & local time for the video element
   // Only auto-select when there's no current selection
@@ -167,7 +196,7 @@ export default function App() {
       let acc = 0
       for (const b of sequenceSpans.arr) {
         if (absTime >= acc && absTime <= acc + b.len + 1e-6) {
-          setSelectedId(b.id)
+          setSelected({ track: activeTrack, id: b.id })
           break
         }
         acc += b.len
@@ -205,7 +234,7 @@ export default function App() {
       }
     })()
     return () => {}
-  }, [selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected?.track, selected?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // When video metadata loads, seek to the local time that matches absTime
   useEffect(() => {
@@ -238,32 +267,26 @@ export default function App() {
 
     // Only auto-play if we explicitly set playThroughRef (during auto-advance)
     if (playThroughRef.current) {
-      console.log('[Auto-resume] Starting auto-resume for:', selectedClip.name)
       playThroughRef.current = false
       
       // Multiple strategies to ensure playback resumes
       const attemptPlay = () => {
         if (!v) return
-        console.log('[Auto-resume] Attempting play, readyState:', v.readyState, 'paused:', v.paused)
         const playPromise = v.play()
         if (playPromise !== undefined) {
-          playPromise
-            .then(() => console.log('[Auto-resume] Play succeeded'))
-            .catch(err => console.error('[Auto-resume] Play failed:', err))
+          playPromise.catch(() => {}) // Ignore play errors
         }
       }
       
       // Strategy 1: Try with a small delay to let DOM settle
       setTimeout(() => {
         if (v.readyState >= 2) {
-          console.log('[Auto-resume] Video ready, playing after delay')
           attemptPlay()
         }
       }, 50)
       
       // Strategy 2: Listen for loadedmetadata
       const onLoaded = () => {
-        console.log('[Auto-resume] loadedmetadata fired')
         v.removeEventListener('loadedmetadata', onLoaded)
         setTimeout(attemptPlay, 50)
       }
@@ -271,7 +294,6 @@ export default function App() {
       
       // Strategy 3: Listen for canplay as backup
       const onCanPlay = () => {
-        console.log('[Auto-resume] canplay fired')
         v.removeEventListener('canplay', onCanPlay)
         setTimeout(attemptPlay, 50)
       }
@@ -319,6 +341,9 @@ export default function App() {
     if (!v || !selectedClip) return
     
     const tick = () => {
+      // Don't update absTime during recording
+      if (isRecording) return
+      
       // ONLY update absTime when video is actually playing
       // This prevents timeupdate from overwriting user clicks/seeks
       if (v.paused) return
@@ -332,18 +357,16 @@ export default function App() {
       // Auto-advance when we hit the clip's out
       const epsilon = 0.15 // ~4-5 frames for better detection
       if (local >= (selectedClip.out - epsilon)) {
-        console.log('[Auto-advance] Boundary reached, advancing to next clip')
         // find next block
         const idx = sequenceSpans.arr.findIndex(b => b.id === selectedClip.id)
         const next = sequenceSpans.arr[idx + 1]
         if (next) {
-          console.log('[Auto-advance] Next clip:', next.clip.name, 'Setting playThroughRef=true')
           // Mark that we should continue playing after clip switch
           playThroughRef.current = true
           // Pause to prevent looping at boundary
           v.pause()
           // Switch to next clip
-          setSelectedId(next.id)
+          setSelected({ track: activeTrack, id: next.id })
           setAbsTime(next.start)
         } else {
           // no next clip -> stop
@@ -356,9 +379,146 @@ export default function App() {
     return () => { 
       v.removeEventListener('timeupdate', tick)
     }
-  }, [selectedClip, sequenceSpans.arr])
+  }, [selectedClip, sequenceSpans.arr, isRecording])
 
-  // Import: add one clip at a time (you can loop over paths to add many)
+  // Drag-and-drop import
+  useEffect(() => {
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault()
+    }
+    const onDrop = async (e: DragEvent) => {
+      e.preventDefault()
+      const rawPaths: string[] = []
+      if (e.dataTransfer?.files?.length) {
+        for (const f of Array.from(e.dataTransfer.files)) {
+          // In Electron, File has a .path we can use
+          // @ts-expect-error electron
+          if (f.path) rawPaths.push((f as any).path)
+        }
+      }
+      if (!rawPaths.length) return
+      // @ts-expect-error preload
+      const paths: string[] = await window.clipforge.importPaths(rawPaths)
+      if (!paths.length) return
+      for (const p of paths) {
+        await addToLibrary(p)
+      }
+    }
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Capture thumbnail from video
+  const captureThumb = async (path: string, type: Mime): Promise<string | undefined> => {
+    try {
+      // @ts-expect-error preload
+      const bytes: Uint8Array = await window.clipforge.readFileBytes(path)
+      const blob = new Blob([bytes], { type })
+      const url = URL.createObjectURL(blob)
+      const v = document.createElement('video')
+      v.preload = 'metadata'
+      v.src = url
+      await v.play().catch(()=>{}) // some browsers require play before seek
+      v.pause()
+      await new Promise<void>((res) => {
+        if (v.readyState >= 1) return res()
+        v.onloadedmetadata = () => res()
+        setTimeout(res, 1000)
+      })
+      const w = Math.max(200, v.videoWidth)
+      const h = Math.max(112, Math.round((v.videoHeight || 112) * (w/(v.videoWidth || 1))))
+      const canvas = document.createElement('canvas')
+      canvas.width = w; canvas.height = h
+      const ctx = canvas.getContext('2d')!
+      ctx.drawImage(v, 0, 0, w, h)
+      URL.revokeObjectURL(url)
+      return canvas.toDataURL('image/jpeg', 0.72)
+    } catch { return undefined }
+  }
+
+  // Add file to library
+  const addToLibrary = async (absPath: string) => {
+    const name = (absPath.split(/[\\/]/).pop() || 'clip')
+    const meta = await probeMedia(absPath)
+    const thumb = await captureThumb(absPath, mimeFor(absPath))
+    const item: LibraryItem = {
+      id: nanoid(8),
+      name, path: absPath,
+      duration: meta.duration || 1,
+      width: meta.width, height: meta.height,
+      thumb
+    }
+    setLibrary(prev => [...prev, item])
+  }
+
+  // Add library item to end of track
+  const appendClipToTrackEnd = (track: 0|1, item: LibraryItem) => {
+    const color = COLORS[(tracks[track].length) % COLORS.length]
+    // Calculate startTime as the rightmost edge of existing clips
+    const existingClips = tracks[track]
+    const rightmostEdge = existingClips.length > 0
+      ? Math.max(...existingClips.map(c => (c.startTime ?? 0) + (c.out - c.in)))
+      : 0
+    
+    const clip: Clip = {
+      id: nanoid(8),
+      name: item.name,
+      path: item.path,
+      in: 0,
+      out: Math.max(0.05, item.duration || 1),
+      duration: item.duration || 1,
+      color,
+      width: item.width, height: item.height,
+      startTime: rightmostEdge,
+    }
+    setTracks(prev => {
+      const copy = prev.map(r => r.slice()) as Clip[][]
+      copy[track].push(clip)
+      return copy
+    })
+    setSelected({ track, id: clip.id })
+    // move playhead to start of new clip
+    setAbsTime(rightmostEdge)
+  }
+
+  // Insert library item at specific position in track
+  const insertClipAt = (track: 0|1, index: number, item: LibraryItem) => {
+    const color = COLORS[(tracks[track].length) % COLORS.length]
+    
+    // Calculate startTime: place at end of previous clip, or at 0 if first
+    const existingClips = tracks[track]
+    let startTime = 0
+    
+    if (index > 0 && index <= existingClips.length) {
+      // Insert after clip at index-1
+      const prevClip = existingClips[index - 1]
+      if (prevClip) {
+        startTime = (prevClip.startTime ?? 0) + (prevClip.out - prevClip.in)
+      }
+    }
+    
+    const clip: Clip = {
+      id: nanoid(8),
+      name: item.name, path: item.path,
+      in: 0, out: Math.max(0.05, item.duration || 1),
+      duration: item.duration || 1,
+      color, width: item.width, height: item.height,
+      startTime,
+    }
+    setTracks(prev => {
+      const copy = prev.map(r => r.slice()) as Clip[][]
+      const clamped = Math.max(0, Math.min(copy[track].length, index))
+      copy[track].splice(clamped, 0, clip)
+      return copy
+    })
+    setSelected({ track, id: clip.id })
+  }
+
+  // Import: add to library (not directly timeline)
   const onImport = async () => {
     // @ts-expect-error preload
     if (!window.clipforge?.openVideos) {
@@ -367,29 +527,7 @@ export default function App() {
     }
     const paths: string[] = await window.clipforge.openVideos()
     if (!paths?.length) return
-    const p = paths[0]
-    const id = nanoid(8)
-    const name = (p.split(/[\\/]/).pop() || 'clip')
-    const color = COLORS[(clips.length) % COLORS.length]
-
-    // Probe duration and resolution by loading into a temp <video> in memory:
-    const meta = await probeMedia(p)
-
-    const next: Clip = {
-      id, name, path: p,
-      in: 0,
-      out: Math.max(0.05, meta.duration || 1),
-      duration: meta.duration || 1,
-      color,
-      width: meta.width,
-      height: meta.height,
-    }
-    setClips(prev => [...prev, next])
-    setSelectedId(id)
-
-    // Set absTime to end so subsequent imports appear after
-    const total = sequenceSpans.total + (next.out - next.in)
-    setAbsTime(total)
+    for (const p of paths) await addToLibrary(p)
   }
 
   // Probe media metadata (duration + resolution) by reading bytes and loading a blob URL
@@ -421,59 +559,11 @@ export default function App() {
     }
   }
 
-  // Handle completed screen recording
+  // Handle completed screen recording - add to library
   const handleRecordingComplete = async (filePath: string) => {
-    console.log('[handleRecordingComplete] Processing:', filePath)
-    const id = nanoid(8)
-    const name = (filePath.split(/[\\/]/).pop() || 'recording.webm')
-    const color = COLORS[(clips.length) % COLORS.length]
-
-    // Calculate where new clip will start
-    const currentTotal = sequenceSpans.total
-
-    // Probe duration and resolution - wait for file to be fully written and closed
-    console.log('[handleRecordingComplete] Waiting 1s for file to be written...')
+    // Wait for file to be fully written
     await new Promise(resolve => setTimeout(resolve, 1000))
-    
-    let meta = await probeMedia(filePath)
-    console.log('[handleRecordingComplete] First probe result:', meta)
-    
-    // If duration probe failed, try again with longer delay
-    if (meta.duration < 0.5) {
-      console.log('[handleRecordingComplete] Duration too small, retrying in 2s...')
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      meta = await probeMedia(filePath)
-      console.log('[handleRecordingComplete] Second probe result:', meta)
-    }
-
-    // If still failed, try one more time
-    if (meta.duration < 0.5) {
-      console.log('[handleRecordingComplete] Still too small, final retry in 2s...')
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      meta = await probeMedia(filePath)
-      console.log('[handleRecordingComplete] Final probe result:', meta)
-    }
-
-    // Ensure minimum duration of 5 seconds if probe failed
-    const finalDuration = meta.duration > 0.5 ? meta.duration : 5
-    console.log('[handleRecordingComplete] Using duration:', finalDuration)
-
-    const next: Clip = {
-      id, name, path: filePath,
-      in: 0,
-      out: finalDuration,
-      duration: finalDuration,
-      color,
-      width: meta.width,
-      height: meta.height,
-    }
-    
-    console.log('[handleRecordingComplete] Adding clip:', next)
-    setClips(prev => [...prev, next])
-    setSelectedId(id)
-
-    // Set absTime to start of new clip (using the total we calculated before adding)
-    setAbsTime(currentTotal)
+    await addToLibrary(filePath)
   }
 
   // Export selected clip’s In/Out (existing MVP path)
@@ -502,52 +592,60 @@ export default function App() {
     }
   }
 
-  // Reorder by dropping a block at an index
-  const onReorder = (fromId: string, toIndex: number) => {
-    setClips(prev => {
-      const idx = prev.findIndex(c => c.id === fromId)
-      if (idx < 0) return prev
-      const arr = prev.slice()
-      const [it] = arr.splice(idx, 1)
-      const clamped = Math.max(0, Math.min(arr.length, toIndex))
-      arr.splice(clamped, 0, it)
-      return arr
+  // Move clip to new start time (absolute positioning)
+  const onMove = (track: 0|1, id: string, newStartTime: number) => {
+    setTracks(prev => {
+      const copy = prev.map(r => r.slice()) as Clip[][]
+      copy[track] = copy[track].map(c => 
+        c.id === id ? { ...c, startTime: newStartTime } : c
+      )
+      return copy
     })
   }
 
   // Trim adjust
-  const onTrim = (id: string, which: 'in' | 'out', next: number) => {
-    setClips(prev => prev.map(c => {
-      if (c.id !== id) return c
-      if (which === 'in') {
-        const nin = Math.max(0, Math.min(next, c.out - 0.05))
-        return { ...c, in: nin }
-      } else {
-        const nout = Math.min(c.duration, Math.max(next, c.in + 0.05))
-        return { ...c, out: nout }
-      }
-    }))
+  const onTrim = (track: 0|1, id: string, which: 'in' | 'out', next: number) => {
+    setTracks(prev => {
+      const copy = prev.map(r => r.slice()) as Clip[][]
+      copy[track] = copy[track].map(c => {
+        if (c.id !== id) return c
+        if (which === 'in') return { ...c, in: Math.max(0, Math.min(next, c.out - 0.05)) }
+        else return { ...c, out: Math.min(c.duration, Math.max(next, c.in + 0.05)) }
+      })
+      return copy
+    })
   }
 
   // Split at playhead
   const splitAtPlayhead = () => {
-    if (!selectedId) return
-    const idx = clips.findIndex(c => c.id === selectedId)
+    if (!selected) return
+    const t = selected.track
+    const id = selected.id
+    const idx = tracks[t].findIndex(c => c.id === id)
     if (idx < 0) return
-    const c = clips[idx]
+    const c = tracks[t][idx]
     const startAbs = sequenceSpans.arr.find(b => b.id === c.id)?.start ?? 0
     const local = c.in + Math.max(0, absTime - startAbs)
     if (local <= c.in + 0.05 || local >= c.out - 0.05) return // too close, skip
 
     const left = { ...c, id: nanoid(8), out: local }
-    const right = { ...c, id: nanoid(8), in: local, name: c.name + ' (2)' }
-    setClips(prev => prev.toSpliced(idx, 1, left, right))
-    setSelectedId(right.id)
+    // Right clip starts at left's end time
+    const rightStartTime = (c.startTime ?? 0) + (local - c.in)
+    const right = { ...c, id: nanoid(8), in: local, name: c.name + ' (2)', startTime: rightStartTime }
+    setTracks(prev => {
+      const copy = prev.map(r => r.slice()) as Clip[][]
+      copy[t].splice(idx, 1, left, right)
+      return copy
+    })
+    setSelected({ track: t, id: right.id })
   }
 
   // Delete selected
   const deleteSelected = () => {
-    if (!selectedId) return
+    if (!selected) return
+    
+    const t = selected.track
+    const id = selected.id
     
     // Pause video and clear source if deleting the currently playing clip
     const v = videoRef.current
@@ -555,12 +653,15 @@ export default function App() {
       v.pause()
     }
     
-    const newClips = clips.filter(c => c.id !== selectedId)
-    setClips(newClips)
-    setSelectedId(null)
+    setTracks(prev => {
+      const copy = prev.map(r => r.slice()) as Clip[][]
+      copy[t] = copy[t].filter(c => c.id !== id)
+      return copy
+    })
+    setSelected(null)
     
-    // If no clips left, clear the video
-    if (newClips.length === 0) {
+    // If no clips left in any track, clear the video
+    if (tracks[0].length + tracks[1].length === 0) {
       if (src) {
         URL.revokeObjectURL(src)
       }
@@ -569,9 +670,9 @@ export default function App() {
     }
   }
 
-  // Export timeline (multi-clip)
+  // Export timeline (active track only for now)
   const exportTimeline = async () => {
-    if (!clips.length) return
+    if (!tracks[activeTrack].length) return
     setWorking('Rendering timeline…')
     setProgress('')
     try {
@@ -606,8 +707,8 @@ export default function App() {
     <div>
       <div className="toolbar">
         <button onClick={onImport}>➕ Import</button>
-        <button onClick={splitAtPlayhead} disabled={!selectedId}>✂️ Split</button>
-        <button onClick={deleteSelected} disabled={!selectedId}>🗑️ Delete</button>
+        <button onClick={splitAtPlayhead} disabled={!selected}>✂️ Split</button>
+        <button onClick={deleteSelected} disabled={!selected}>🗑️ Delete</button>
         
         {/* Resolution preset for export */}
         <label className="meta" style={{ marginLeft: 8 }}>
@@ -624,12 +725,64 @@ export default function App() {
         </label>
         
         <button onClick={exportSelected} disabled={!selectedClip}>💾 Export MP4 (selected)</button>
-        <button onClick={exportTimeline} disabled={!clips.length}>📤 Export Timeline</button>
+        <button onClick={exportTimeline} disabled={!tracks[activeTrack].length}>📤 Export Timeline</button>
         <span className="meta">{working}</span>
       </div>
 
-      <div className="main">
-        <div className="player">
+      {/* Sidebar + main grid */}
+      <div className="main" style={{ 
+        display: 'grid',
+        gridTemplateColumns: '240px 1fr', 
+        gridTemplateRows: '1fr auto', 
+        gridTemplateAreas: '"lib player" "lib timeline"', 
+        height:'calc(100vh - 52px)' 
+      }}>
+        {/* Left rail: Media Library */}
+        <div style={{ gridArea:'lib', display:'flex', flexDirection:'column' }}>
+          <MediaLibrary items={library} />
+          <div style={{ padding:8, borderTop:'1px solid #eee', borderRight:'1px solid #eee' }}>
+            <div style={{ fontSize:12, marginBottom:6 }}>Active track:</div>
+            <div style={{ display:'flex', gap:6 }}>
+              <button 
+                onClick={()=>setActiveTrack(0)} 
+                style={{ 
+                  padding:'4px 8px', fontSize:12, 
+                  background: activeTrack===0?'#2563eb':'#fff', 
+                  color: activeTrack===0?'#fff':'#333', 
+                  border:'1px solid #ddd', borderRadius:4 
+                }}
+              >
+                Main
+              </button>
+              <button 
+                onClick={()=>setActiveTrack(1)} 
+                style={{ 
+                  padding:'4px 8px', fontSize:12, 
+                  background: activeTrack===1?'#2563eb':'#fff', 
+                  color: activeTrack===1?'#fff':'#333', 
+                  border:'1px solid #ddd', borderRadius:4 
+                }}
+              >
+                Overlay
+              </button>
+            </div>
+            <div style={{ marginTop:8 }}>
+              <button 
+                onClick={()=>{
+                  const it = library[library.length-1]
+                  if (it) appendClipToTrackEnd(activeTrack, it)
+                }} 
+                style={{ padding:'4px 8px', fontSize:12 }}
+                disabled={!library.length}
+              >
+                Add last to active
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Player */}
+        <div className="player" style={{ gridArea:'player' }}>
           <video
             ref={videoRef}
             src={src || undefined}
@@ -645,42 +798,50 @@ export default function App() {
           {!src && !isRecording && (
             <div style={{ color: '#444', padding: 24 }}>
               <h1>ClipForge</h1>
-              <p>Import a video to get started.</p>
+              <p>Drag & drop videos or click Import to get started.</p>
             </div>
           )}
         </div>
 
         {/* Timeline */}
-        <div className="timeline">
+        <div className="timeline" style={{ gridArea:'timeline' }}>
           <div className="timelineHeader">
             <b>Timeline</b>
-            <button onClick={() => setPxPerSec(v => Math.max(10, Math.floor(v * 0.8)))} style={{ padding:'2px 6px' }}>–</button>
+            <span style={{ marginLeft:8, fontSize:12, color:'#666' }}>Tracks: Main (0) + Overlay (1)</span>
+            <button onClick={() => setPxPerSec(v => Math.max(10, Math.floor(v * 0.8)))} style={{ padding:'2px 6px', marginLeft:'auto' }}>–</button>
             <button onClick={() => setPxPerSec(v => Math.min(800, Math.ceil(v * 1.25)))} style={{ padding:'2px 6px' }}>+</button>
             <span style={{ color:'#666' }}>{Math.round(pxPerSec)} px/s</span>
           </div>
 
           <div className="timelineWrap">
             <TimelineCanvas
-              clips={clips}
-              selectedId={selectedId}
-              setSelectedId={setSelectedId}
+              tracks={tracks}
+              activeTrack={activeTrack}
+              selected={selected}
+              setSelected={setSelected}
               pxPerSec={pxPerSec}
               setPxPerSec={setPxPerSec}
               absTime={absTime}
               setAbsTime={setAbsTimeFromUser}
-              onReorder={onReorder}
+              onMove={onMove}
               onTrim={onTrim}
+              onExternalDrop={(track, atIndex, libId) => {
+                const it = library.find(x => x.id === libId)
+                if (!it) return
+                insertClipAt(track, atIndex, it)
+              }}
             />
           </div>
         </div>
-
-        {/* Recording Panel (Tabbed) */}
-        <RecordingPanel 
-          onRecordingComplete={handleRecordingComplete}
-          videoRef={videoRef}
-          setIsRecording={setIsRecording}
-        />
       </div>
+
+      {/* Recording Panel (positioned outside main grid) */}
+      <RecordingPanel 
+        onRecordingComplete={handleRecordingComplete}
+        videoRef={videoRef}
+        setIsRecording={setIsRecording}
+      />
+
       {progress && (
         <div style={{
           position: 'fixed',

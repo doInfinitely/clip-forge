@@ -11,5 +11,6 @@ contextBridge.exposeInMainWorld("clipforge", {
   },
   projectSave: (data) => ipcRenderer.invoke("project-save", data),
   projectLoad: () => ipcRenderer.invoke("project-load"),
-  getDesktopSources: (opts) => ipcRenderer.invoke("get-desktop-sources", opts)
+  getDesktopSources: (opts) => ipcRenderer.invoke("get-desktop-sources", opts),
+  importPaths: (paths) => ipcRenderer.invoke("import-paths", paths)
 });

@@ -81,7 +81,7 @@ export default function WebcamCapture({ onRecordingComplete, videoRef: externalV
       recRef.current = rec
       setRecording(true)
       setIsRecording?.(true)
-      setStatus('Recording…')
+      setStatus('') // Clear status - the red banner will show recording state
       
       // Start timer
       startTimeRef.current = Date.now()
@@ -96,13 +96,17 @@ export default function WebcamCapture({ onRecordingComplete, videoRef: externalV
   }
 
   function stop() {
+    // Stop recording first
     recRef.current?.stop()
+    
+    // Immediately stop all tracks to prevent feedback
     streamRef.current?.getTracks().forEach(t => t.stop())
     
-    // Clear preview
+    // Clear preview immediately
     const preview = externalVideoRef?.current || videoRef.current
     if (preview) {
       preview.srcObject = null
+      preview.pause()
     }
     
     // Stop timer
@@ -154,7 +158,7 @@ export default function WebcamCapture({ onRecordingComplete, videoRef: externalV
       
       {/* Recording status and timer */}
       {recording && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, background: '#fee', borderRadius: 6 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, padding: 8, background: '#fee', borderRadius: 6 }}>
           <div style={{ fontSize:12, fontWeight:'bold', color:'#dc2626' }}>
             🔴 Recording in progress...
           </div>

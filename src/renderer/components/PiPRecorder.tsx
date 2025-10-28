@@ -83,6 +83,7 @@ export default function PiPRecorder({ onRecordingComplete, videoRef: externalVid
     // Clear external video preview
     if (externalVideoRef?.current) {
       externalVideoRef.current.srcObject = null
+      externalVideoRef.current.pause()
     }
     
     screenStreamRef.current = camStreamRef.current = micStreamRef.current = canvasStreamRef.current = null
@@ -238,7 +239,7 @@ export default function PiPRecorder({ onRecordingComplete, videoRef: externalVid
       recRef.current = rec
       setRecording(true)
       setIsRecording?.(true)
-      setStatus('Recording PiP…')
+      setStatus('') // Clear status - the red banner will show recording state
       
       // Start timer
       startTimeRef.current = Date.now()
@@ -255,7 +256,33 @@ export default function PiPRecorder({ onRecordingComplete, videoRef: externalVid
   }
 
   function stop() {
+    // Stop recording first
     recRef.current?.stop()
+    
+    // Immediately stop all streams to prevent feedback
+    screenStreamRef.current?.getTracks().forEach(t=>t.stop())
+    camStreamRef.current?.getTracks().forEach(t=>t.stop())
+    micStreamRef.current?.getTracks().forEach(t=>t.stop())
+    canvasStreamRef.current?.getTracks().forEach(t=>t.stop())
+    
+    // Clear preview immediately
+    if (externalVideoRef?.current) {
+      externalVideoRef.current.srcObject = null
+      externalVideoRef.current.pause()
+    }
+    
+    // Cancel animation frame
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+    
+    // Stop timer
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    
     setRecording(false)
     setIsRecording?.(false)
     setStatus('Finalizing…')
@@ -359,7 +386,7 @@ export default function PiPRecorder({ onRecordingComplete, videoRef: externalVid
       
       {/* Recording status and timer */}
       {recording && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, background: '#fee', borderRadius: 6 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, padding: 8, background: '#fee', borderRadius: 6 }}>
           <div style={{ fontSize:12, fontWeight:'bold', color:'#dc2626' }}>
             🔴 Recording in progress...
           </div>

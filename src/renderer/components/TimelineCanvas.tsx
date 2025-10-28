@@ -12,67 +12,75 @@ export type Clip = {
   color: string
   width?: number
   height?: number
+  startTime?: number  // absolute start time on track (for non-sequential positioning)
 }
 
 type Props = {
-  clips: Clip[]
-  selectedId: string | null
-  setSelectedId: (id: string) => void
+  tracks: Clip[][]
+  activeTrack: 0|1
+  selected: {track: 0|1, id: string} | null
+  setSelected: (sel: {track:0|1,id:string} | null) => void
   pxPerSec: number
   setPxPerSec: (v: number) => void
   absTime: number
   setAbsTime: (t: number) => void
-  onReorder: (fromId: string, toIndex: number) => void
-  onTrim: (id: string, which: 'in' | 'out', next: number) => void
+  onMove: (track: 0|1, id: string, newStartTime: number) => void
+  onTrim: (track: 0|1, id: string, which: 'in' | 'out', next: number) => void
+  onExternalDrop?: (track: 0|1, atIndex: number, libId: string) => void
 }
 
 const TL_HEIGHT = 100
-const CLIP_H = 56
-const CLIP_Y = (TL_HEIGHT - CLIP_H) / 2
+const ROW_H = 50
+const ROW_GAP = 0
+const CLIP_H = 36
+const ROW_Y = (row: 0|1) => row * (ROW_H + ROW_GAP)
+const CLIP_Y = (row: 0|1) => ROW_Y(row) + Math.round((ROW_H - CLIP_H) / 2)
+
 const HANDLE_W = 6
 const MIN_LEN = 0.05
 const MIN_PX  = 24 // Keep large enough for interaction with handles
 const SNAP_THRESHOLD = 0.1 // snap within 0.1s
 
 export default function TimelineCanvas({
-  clips, selectedId, setSelectedId,
+  tracks, activeTrack, selected, setSelected,
   pxPerSec, setPxPerSec,
   absTime, setAbsTime,
-  onReorder, onTrim,
+  onMove, onTrim,
+  onExternalDrop,
 }: Props) {
   const stageRef = useRef<any>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
   const [vw, setVw] = useState<number>(typeof window !== 'undefined' ? window.innerWidth : 800)
+  
   useEffect(() => {
     const onR = () => setVw(window.innerWidth)
     window.addEventListener('resize', onR)
     return () => window.removeEventListener('resize', onR)
   }, [])
-  const stageX = () =>
-    stageRef.current?.getStage()?.getPointerPosition()?.x ?? 0
 
-  const spans = useMemo(() => {
-    const arr: Array<{id: string; start: number; len: number; clip: Clip}> = []
-    let acc = 0
-    for (const c of clips) {
-      const len = Math.max(MIN_LEN, c.out - c.in)
-      arr.push({ id: c.id, start: acc, len, clip: c })
-      acc += len
-    }
-    return { blocks: arr, total: acc }
-  }, [clips])
+  // Compute spans for both tracks (using absolute positioning)
+  const spansByTrack = useMemo(() => {
+    return tracks.map(trackClips => {
+      const arr: Array<{id: string; start: number; len: number; clip: Clip}> = []
+      for (const c of trackClips) {
+        const len = Math.max(MIN_LEN, c.out - c.in)
+        const start = c.startTime ?? 0  // use absolute startTime if set, else 0
+        arr.push({ id: c.id, start, len, clip: c })
+      }
+      // Calculate total as the rightmost edge
+      const total = arr.length > 0 
+        ? Math.max(...arr.map(b => b.start + b.len))
+        : 0
+      return { blocks: arr, total }
+    })
+  }, [tracks])
 
-  const timeToClipIndex = (t: number) => {
-    let acc = 0
-    for (let i = 0; i < spans.blocks.length; i++) {
-      const b = spans.blocks[i]
-      if (t >= acc && t <= acc + b.len + 1e-6) return i
-      acc += b.len
-    }
-    return Math.max(0, spans.blocks.length - 1)
-  }
+  const maxTotal = Math.max(spansByTrack[0].total, spansByTrack[1].total, 10)
+  const width = Math.max(600, maxTotal * pxPerSec + 80)
+  const contentWidth = Math.max(width, vw)
 
-  // Snap helper: snap to whole seconds and neighbor edges
-  const snapTime = (time: number, clipId: string, which: 'in' | 'out') => {
+  // Snap helper
+  const snapTime = (time: number, track: 0|1, clipId: string, which: 'in' | 'out') => {
     let snapped = time
     
     // Snap to whole seconds
@@ -82,25 +90,18 @@ export default function TimelineCanvas({
     }
     
     // Snap to neighbor edges
-    const currentClipIndex = spans.blocks.findIndex(b => b.id === clipId)
+    const trackClips = tracks[track]
+    const currentClipIndex = trackClips.findIndex(c => c.id === clipId)
     if (currentClipIndex >= 0) {
-      const currentClip = clips[currentClipIndex]
-      
-      if (which === 'in') {
-        // Snap left handle to previous clip's out point
-        if (currentClipIndex > 0) {
-          const prevClip = clips[currentClipIndex - 1]
-          if (Math.abs(time - prevClip.out) < SNAP_THRESHOLD) {
-            snapped = prevClip.out
-          }
+      if (which === 'in' && currentClipIndex > 0) {
+        const prevClip = trackClips[currentClipIndex - 1]
+        if (Math.abs(time - prevClip.out) < SNAP_THRESHOLD) {
+          snapped = prevClip.out
         }
-      } else {
-        // Snap right handle to next clip's in point
-        if (currentClipIndex < clips.length - 1) {
-          const nextClip = clips[currentClipIndex + 1]
-          if (Math.abs(time - nextClip.in) < SNAP_THRESHOLD) {
-            snapped = nextClip.in
-          }
+      } else if (which === 'out' && currentClipIndex < trackClips.length - 1) {
+        const nextClip = trackClips[currentClipIndex + 1]
+        if (Math.abs(time - nextClip.in) < SNAP_THRESHOLD) {
+          snapped = nextClip.in
         }
       }
     }
@@ -108,252 +109,265 @@ export default function TimelineCanvas({
     return snapped
   }
 
-  const width = Math.max(600, spans.total * pxPerSec + 80)
-  const contentWidth = Math.max(Math.max(600, spans.total * pxPerSec + 80), vw)
-
   const onBackgroundMouseDown = (e: any) => {
-    // Only respond if clicking directly on the background, not on clips
+    // Only respond if clicking directly on the background
     if (e.target !== e.currentTarget) return
     
-    const x = e.target.getStage().getPointerPosition().x
+    const stage = e.target.getStage()
+    const pos = stage.getPointerPosition()
+    const x = pos.x
+    const y = pos.y
+    
+    // Determine which track was clicked
+    const track: 0|1 = y < ROW_H ? 0 : 1
     const t = Math.max(0, (x - 40) / pxPerSec)
     setAbsTime(t)
-    const idx = timeToClipIndex(t)
-    const targetBlock = spans.blocks[idx]
-    if (targetBlock) setSelectedId(targetBlock.id)
+    
+    // Find clip at this time in the clicked track (using absolute positioning)
+    const spans = spansByTrack[track]
+    for (const b of spans.blocks) {
+      const clipStart = b.start
+      const clipEnd = b.start + b.len
+      if (t >= clipStart && t <= clipEnd + 1e-6) {
+        setSelected({ track, id: b.id })
+        return
+      }
+    }
+  }
+
+  // HTML5 drop handler for external library items
+  const handleDrop: React.DragEventHandler<HTMLDivElement> = (e) => {
+    if (!onExternalDrop) return
+    const libId = e.dataTransfer.getData('application/x-clipforge-media-id')
+    if (!libId) return
+    e.preventDefault()
+    const rect = containerRef.current!.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    const track: 0|1 = y < ROW_H ? 0 : 1
+    const spans = spansByTrack[track]
+    const tSec = Math.max(0, (x - 40) / pxPerSec)
+    
+    // Find index - insert before the first clip whose midpoint is after tSec
+    let idx = 0
+    for (let i = 0; i < spans.blocks.length; i++) {
+      const clipStart = spans.blocks[i].start
+      const clipMid = clipStart + spans.blocks[i].len / 2
+      if (tSec < clipMid) {
+        idx = i
+        break
+      }
+      idx = i + 1
+    }
+    onExternalDrop(track, idx, libId)
+  }
+
+  const handleDragOver: React.DragEventHandler<HTMLDivElement> = (e) => {
+    if (e.dataTransfer.types.includes('application/x-clipforge-media-id')) {
+      e.preventDefault()
+    }
   }
 
   return (
-    <Stage
-      ref={stageRef}
-      width={contentWidth}
-      height={TL_HEIGHT}
-      style={{ background:'#fafafa', borderTop:'1px solid #eee' }}
-    >
-      <Layer>
-        {/* Background rect for playhead scrubbing */}
-        <Rect
-          x={0}
-          y={0}
-          width={contentWidth}
-          height={TL_HEIGHT}
-          fill="transparent"
-          onMouseDown={onBackgroundMouseDown}
-        />
-        
-        {/* grid */}
-        {Array.from({ length: Math.ceil(width / pxPerSec) + 1 }).map((_, i) => (
+    <div ref={containerRef} onDrop={handleDrop} onDragOver={handleDragOver}>
+      <Stage
+        ref={stageRef}
+        width={contentWidth}
+        height={TL_HEIGHT}
+        style={{ background:'#fafafa', borderTop:'1px solid #eee' }}
+      >
+        <Layer>
+          {/* Background rect for playhead scrubbing */}
+          <Rect
+            x={0}
+            y={0}
+            width={contentWidth}
+            height={TL_HEIGHT}
+            fill="transparent"
+            onMouseDown={onBackgroundMouseDown}
+          />
+          
+          {/* Grid lines */}
+          {Array.from({ length: Math.ceil(width / pxPerSec) + 1 }).map((_, i) => (
+            <Line
+              key={`g${i}`}
+              points={[40 + i * pxPerSec, 0, 40 + i * pxPerSec, TL_HEIGHT]}
+              stroke="#eee"
+              strokeWidth={1}
+              listening={false}
+            />
+          ))}
+
+          {/* Track separators */}
           <Line
-            key={`g${i}`}
-            points={[40 + i * pxPerSec, 0, 40 + i * pxPerSec, TL_HEIGHT]}
-            stroke="#eee"
+            points={[0, ROW_H, contentWidth, ROW_H]}
+            stroke="#ccc"
             strokeWidth={1}
             listening={false}
           />
-        ))}
 
-        {/* clips */}
-        {spans.blocks.map((b) => {
-          const x = 40 + b.start * pxPerSec
-          const actualW = b.len * pxPerSec
-          const w = Math.max(MIN_PX, actualW)
-          const isSel = b.id === selectedId
-          const c = b.clip
+          {/* Render clips for each track */}
+          {[0, 1].map(trackIdx => {
+            const t = trackIdx as 0|1
+            const spans = spansByTrack[t]
+            const trackY = ROW_Y(t)
+            const clipY = CLIP_Y(t)
 
-          const onDragEnd = (evt: any) => {
-            const nx = evt.target.x()
-            const center = (nx - 40) + w / 2
-            const newAbs = Math.max(0, center / pxPerSec)
-            let acc = 0
-            let newIndex = 0
-            for (let i = 0; i < spans.blocks.length; i++) {
-              const L = spans.blocks[i].len
-              if (newAbs < acc + L / 2) { newIndex = i; break }
-              acc += L
-              newIndex = i
-              if (i === spans.blocks.length - 1 && newAbs >= acc) newIndex = i
-            }
-            onReorder(b.id, newIndex)
-          }
+            return spans.blocks.map((b) => {
+              const x = 40 + b.start * pxPerSec
+              const actualW = b.len * pxPerSec
+              const w = Math.max(MIN_PX, actualW)
+              const isSel = selected?.track === t && selected.id === b.id
+              const c = b.clip
 
-          const onLeftDragMove = (e: any) => {
-            const abs = e.target.getStage().getPointerPosition().x
-            const localSec = (abs - 40) / pxPerSec - b.start
-            let nextIn = c.in + localSec
-            nextIn = Math.max(0, Math.min(nextIn, c.out - MIN_LEN))
-            nextIn = snapTime(nextIn, c.id, 'in')
-            onTrim(c.id, 'in', nextIn)
-          }
-          const onRightDragMove = (e: any) => {
-            const abs = e.target.getStage().getPointerPosition().x
-            const localSec = (abs - 40) / pxPerSec - b.start
-            let nextOut = c.in + localSec
-            nextOut = Math.max(c.in + MIN_LEN, Math.min(nextOut, c.duration))
-            nextOut = snapTime(nextOut, c.id, 'out')
-            onTrim(c.id, 'out', nextOut)
-          }
+              return (
+                <Group 
+                  key={`${t}-${b.id}`}
+                  x={x}
+                  y={0}
+                  draggable={false}
+                >
+                  <Rect
+                    x={0} y={clipY}
+                    width={w} height={CLIP_H}
+                    cornerRadius={8}
+                    fill={c.color}
+                    opacity={isSel ? 0.9 : 0.7}
+                    stroke={isSel ? '#111' : '#bbb'}
+                    strokeWidth={isSel ? 2 : 1}
+                    draggable
+                    dragBoundFunc={(pos) => {
+                      // Allow dragging anywhere horizontally within this track row
+                      return { x: pos.x, y: clipY }
+                    }}
+                    onDragEnd={(e) => {
+                      const deltaX = e.target.x()
+                      e.target.x(0) // Reset to 0
+                      
+                      // Calculate new start time
+                      const newX = x + deltaX
+                      const newStartTime = Math.max(0, (newX - 40) / pxPerSec)
+                      
+                      onMove(t, b.id, newStartTime)
+                    }}
+                    onMouseDown={(e) => { 
+                      const clickX = e.target.getStage().getPointerPosition().x
+                      const time = Math.max(0, (clickX - 40) / pxPerSec)
+                      setAbsTime(time)
+                      setSelected({ track: t, id: c.id })
+                    }}
+                  />
+                  <Text
+                    x={8} y={clipY + 6}
+                    text={c.name}
+                    fontSize={10}
+                    fill="#111"
+                    listening={false}
+                  />
+                  <Text
+                    x={8} y={clipY + 20}
+                    text={`${(c.duration).toFixed(2)}s` + (c.width && c.height ? ` • ${c.width}×${c.height}` : '')}
+                    fontSize={8}
+                    fill="#333"
+                    listening={false}
+                  />
+                  
+                  {/* Left handle */}
+                  <Rect
+                    x={0}
+                    y={clipY}
+                    width={HANDLE_W}
+                    height={CLIP_H}
+                    fill="#333"
+                    opacity={0.6}
+                    onMouseDown={(e) => {
+                      e.cancelBubble = true
+                      e.evt.stopPropagation()
+                      e.evt.preventDefault()
+                      setSelected({ track: t, id: c.id })
+                      
+                      const stage = e.target.getStage()
+                      const startX = stage.getPointerPosition().x
+                      const startIn = c.in
+                      
+                      const onMove = () => {
+                        const currentX = stage.getPointerPosition()?.x ?? startX
+                        const deltaX = currentX - startX
+                        const deltaSec = deltaX / pxPerSec
+                        let nextIn = startIn + deltaSec
+                        nextIn = Math.max(0, Math.min(nextIn, c.out - MIN_LEN))
+                        nextIn = snapTime(nextIn, t, c.id, 'in')
+                        onTrim(t, c.id, 'in', nextIn)
+                      }
+                      
+                      const onUp = () => {
+                        stage.off('mousemove', onMove)
+                        stage.off('mouseup', onUp)
+                        stage.off('mouseleave', onUp)
+                      }
+                      
+                      stage.on('mousemove', onMove)
+                      stage.on('mouseup', onUp)
+                      stage.on('mouseleave', onUp)
+                    }}
+                  />
+                  
+                  {/* Right handle */}
+                  <Rect
+                    x={w - HANDLE_W}
+                    y={clipY}
+                    width={HANDLE_W}
+                    height={CLIP_H}
+                    fill="#333"
+                    opacity={0.6}
+                    onMouseDown={(e) => {
+                      e.cancelBubble = true
+                      e.evt.stopPropagation()
+                      e.evt.preventDefault()
+                      setSelected({ track: t, id: c.id })
+                      
+                      const stage = e.target.getStage()
+                      const startX = stage.getPointerPosition().x
+                      const startOut = c.out
+                      
+                      const onMove = () => {
+                        const currentX = stage.getPointerPosition()?.x ?? startX
+                        const deltaX = currentX - startX
+                        const deltaSec = deltaX / pxPerSec
+                        let nextOut = startOut + deltaSec
+                        nextOut = Math.max(c.in + MIN_LEN, Math.min(nextOut, c.duration))
+                        nextOut = snapTime(nextOut, t, c.id, 'out')
+                        onTrim(t, c.id, 'out', nextOut)
+                      }
+                      
+                      const onUp = () => {
+                        stage.off('mousemove', onMove)
+                        stage.off('mouseup', onUp)
+                        stage.off('mouseleave', onUp)
+                      }
+                      
+                      stage.on('mousemove', onMove)
+                      stage.on('mouseup', onUp)
+                      stage.on('mouseleave', onUp)
+                    }}
+                  />
+                </Group>
+              )
+            })
+          })}
 
-          return (
-            <Group 
-              key={b.id}
-              x={x}
-              y={0}
-              draggable={false}
-            >
-              <Rect
-                x={0} y={CLIP_Y}
-                width={w} height={CLIP_H}
-                cornerRadius={8}
-                fill={c.color}
-                opacity={isSel ? 0.9 : 0.7}
-                stroke={isSel ? '#111' : '#bbb'}
-                strokeWidth={isSel ? 2 : 1}
-                draggable
-                dragBoundFunc={(pos) => {
-                  // Allow dragging anywhere horizontally
-                  return { x: pos.x, y: CLIP_Y }
-                }}
-                onDragEnd={(e) => {
-                  const deltaX = e.target.x()
-                  e.target.x(0) // Reset to 0
-                  
-                  // Calculate new absolute position in timeline
-                  const newAbsX = x + deltaX
-                  const centerX = newAbsX + w / 2
-                  const centerTime = Math.max(0, (centerX - 40) / pxPerSec)
-                  
-                  // Find which position this time corresponds to
-                  let acc = 0
-                  let newIndex = 0
-                  for (let i = 0; i < spans.blocks.length; i++) {
-                    const blockMidpoint = acc + spans.blocks[i].len / 2
-                    if (centerTime < blockMidpoint) {
-                      newIndex = i
-                      break
-                    }
-                    acc += spans.blocks[i].len
-                    newIndex = i + 1
-                  }
-                  
-                  // Don't allow moving past the last position
-                  newIndex = Math.min(newIndex, spans.blocks.length - 1)
-                  
-                  onReorder(b.id, newIndex)
-                }}
-                onMouseDown={(e) => { 
-                  const clickX = e.target.getStage().getPointerPosition().x
-                  const t = Math.max(0, (clickX - 40) / pxPerSec)
-                  setAbsTime(t)
-                  setSelectedId(c.id)
-                }}
-              />
-              <Text
-                x={10} y={CLIP_Y + 16}
-                text={c.name}
-                fontSize={12}
-                fill="#111"
-                listening={false}
-              />
-              <Text
-                x={10} y={CLIP_Y + 34}
-                text={`${(c.duration).toFixed(2)}s` + (c.width && c.height ? ` • ${c.width}×${c.height}` : '')}
-                fontSize={10}
-                fill="#333"
-                listening={false}
-              />
-              {/* left handle */}
-              <Rect
-                x={0}
-                y={CLIP_Y}
-                width={HANDLE_W}
-                height={CLIP_H}
-                fill="#333"
-                opacity={0.6}
-                onMouseDown={(e) => {
-                  e.cancelBubble = true
-                  e.evt.stopPropagation()
-                  e.evt.preventDefault()
-                  setSelectedId(c.id)
-                  
-                  const stage = e.target.getStage()
-                  const startX = stage.getPointerPosition().x
-                  const startIn = c.in
-                  
-                  const onMove = () => {
-                    const currentX = stage.getPointerPosition()?.x ?? startX
-                    const deltaX = currentX - startX
-                    const deltaSec = deltaX / pxPerSec
-                    let nextIn = startIn + deltaSec
-                    nextIn = Math.max(0, Math.min(nextIn, c.out - MIN_LEN))
-                    nextIn = snapTime(nextIn, c.id, 'in')
-                    onTrim(c.id, 'in', nextIn)
-                  }
-                  
-                  const onUp = () => {
-                    stage.off('mousemove', onMove)
-                    stage.off('mouseup', onUp)
-                    stage.off('mouseleave', onUp)
-                  }
-                  
-                  stage.on('mousemove', onMove)
-                  stage.on('mouseup', onUp)
-                  stage.on('mouseleave', onUp)
-                }}
-              />
-              {/* right handle */}
-              <Rect
-                x={w - HANDLE_W}
-                y={CLIP_Y}
-                width={HANDLE_W}
-                height={CLIP_H}
-                fill="#333"
-                opacity={0.6}
-                onMouseDown={(e) => {
-                  e.cancelBubble = true
-                  e.evt.stopPropagation()
-                  e.evt.preventDefault()
-                  setSelectedId(c.id)
-                  
-                  const stage = e.target.getStage()
-                  const startX = stage.getPointerPosition().x
-                  const startOut = c.out
-                  
-                  const onMove = () => {
-                    const currentX = stage.getPointerPosition()?.x ?? startX
-                    const deltaX = currentX - startX
-                    const deltaSec = deltaX / pxPerSec
-                    let nextOut = startOut + deltaSec
-                    nextOut = Math.max(c.in + MIN_LEN, Math.min(nextOut, c.duration))
-                    nextOut = snapTime(nextOut, c.id, 'out')
-                    onTrim(c.id, 'out', nextOut)
-                  }
-                  
-                  const onUp = () => {
-                    stage.off('mousemove', onMove)
-                    stage.off('mouseup', onUp)
-                    stage.off('mouseleave', onUp)
-                  }
-                  
-                  stage.on('mousemove', onMove)
-                  stage.on('mouseup', onUp)
-                  stage.on('mouseleave', onUp)
-                }}
-              />
-            </Group>
-          )
-        })}
-
-        {/* playhead */}
-        <Line
-          points={[
-            40 + absTime * pxPerSec, 0,
-            40 + absTime * pxPerSec, TL_HEIGHT
-          ]}
-          stroke="#e11d48"
-          strokeWidth={2}
-        />
-      </Layer>
-    </Stage>
+          {/* Playhead (only show on active track) */}
+          <Line
+            points={[
+              40 + absTime * pxPerSec, ROW_Y(activeTrack),
+              40 + absTime * pxPerSec, ROW_Y(activeTrack) + ROW_H
+            ]}
+            stroke="#e11d48"
+            strokeWidth={2}
+          />
+        </Layer>
+      </Stage>
+    </div>
   )
 }
-

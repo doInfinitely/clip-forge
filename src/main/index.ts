@@ -134,6 +134,20 @@ ipcMain.handle('get-desktop-sources', async (_evt, opts?: { types?: Array<'scree
   }))
 })
 
+// Validate a list of file paths and return only supported video files
+ipcMain.handle('import-paths', async (_evt, paths: string[]) => {
+  const okExt = new Set(['.mp4','.mov','.webm','.mkv'])
+  const out: string[] = []
+  for (const p of paths ?? []) {
+    try {
+      const stat = await fs.stat(p)
+      const ext = path.extname(p).toLowerCase()
+      if (stat.isFile() && okExt.has(ext)) out.push(p)
+    } catch {}
+  }
+  return out
+})
+
 // Trim a clip using native FFmpeg (ffmpeg-static)
 ipcMain.handle('ffmpeg-trim', async (_evt, args: {
   inputPath: string, tIn: number, tOut: number, reencode?: boolean

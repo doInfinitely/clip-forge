@@ -112,6 +112,19 @@ ipcMain.handle("get-desktop-sources", async (_evt, opts) => {
     thumbnail: s.thumbnail?.toDataURL() ?? null
   }));
 });
+ipcMain.handle("import-paths", async (_evt, paths) => {
+  const okExt = /* @__PURE__ */ new Set([".mp4", ".mov", ".webm", ".mkv"]);
+  const out = [];
+  for (const p of paths ?? []) {
+    try {
+      const stat = await fs.stat(p);
+      const ext = path.extname(p).toLowerCase();
+      if (stat.isFile() && okExt.has(ext)) out.push(p);
+    } catch {
+    }
+  }
+  return out;
+});
 ipcMain.handle("ffmpeg-trim", async (_evt, args) => {
   const { inputPath, tIn, tOut, reencode = true } = args;
   if (!inputPath) throw new Error("No inputPath");

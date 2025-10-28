@@ -122,7 +122,7 @@ export default function ScreenCapture({ onRecordingComplete, videoRef: externalV
       recorderRef.current = rec
       setRecording(true)
       setIsRecording?.(true)
-      setStatus('Recording…')
+      setStatus('') // Clear status - the red banner will show recording state
       
       // Start timer
       startTimeRef.current = Date.now()
