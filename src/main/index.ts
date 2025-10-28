@@ -45,7 +45,7 @@ async function createWindow() {
   if (!app.isPackaged) {
     // 👇 load the dev server that electron-vite started
     await win.loadURL(process.env['ELECTRON_RENDERER_URL']!)
-    //win.webContents.openDevTools()
+    // win.webContents.openDevTools()
   } else {
     // 👇 load the built renderer html
     await win.loadFile(path.join(__dirname, '../renderer/index.html'))
@@ -127,6 +127,76 @@ ipcMain.handle('ffmpeg-trim', async (_evt, args: {
 
   const bytes = await fs.readFile(tmpOut)
   await fs.unlink(tmpOut).catch(() => {}) // best effort
+  return new Uint8Array(bytes)
+})
+
+// Export timeline (multi-clip)
+ipcMain.handle('ffmpeg-export-timeline', async (_evt, args: {
+  parts: Array<{ inputPath: string; tIn: number; tOut: number }>,
+  reencodeCRF?: number
+}) => {
+  const { parts, reencodeCRF = 23 } = args
+  if (!parts?.length) throw new Error('No parts')
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipforge_'))
+  const outs: string[] = []
+
+  // 1) trim each segment to unified codec
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i]
+    const out = path.join(tmpDir, `seg_${i}.mp4`)
+    const ffArgs = [
+      '-ss', String(p.tIn),
+      '-to', String(p.tOut),
+      '-i', p.inputPath,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(reencodeCRF),
+      '-c:a', 'aac',
+      '-movflags', '+faststart',
+      '-y', out,
+    ]
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegPath, ffArgs, { stdio: ['ignore', 'ignore', 'pipe'] })
+      let stderrData = ''
+      proc.stderr?.on('data', (chunk) => {
+        stderrData += chunk.toString()
+        // Send progress updates to renderer
+        const lines = stderrData.split('\n')
+        for (const line of lines) {
+          if (line.includes('frame=') || line.includes('time=')) {
+            win?.webContents.send('ffmpeg-progress', `Segment ${i + 1}/${parts.length}: ${line.trim()}`)
+          }
+        }
+      })
+      proc.on('error', reject)
+      proc.on('close', code => code === 0 ? resolve() : reject(new Error(`trim exit ${code}`)))
+    })
+    outs.push(out)
+  }
+
+  // 2) write concat list
+  const listPath = path.join(tmpDir, 'list.txt')
+  const body = outs.map(o => `file '${o.replace(/'/g, "'\\''")}'`).join('\n')
+  await fs.writeFile(listPath, body)
+
+  // 3) concat
+  const finalPath = path.join(tmpDir, `final_${Date.now()}.mp4`)
+  await new Promise<void>((resolve, reject) => {
+    const args = ['-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', '-y', finalPath]
+    const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    proc.stderr?.on('data', (chunk) => {
+      win?.webContents.send('ffmpeg-progress', `Concatenating: ${chunk.toString().trim()}`)
+    })
+    proc.on('error', reject)
+    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`concat exit ${code}`)))
+  })
+
+  const bytes = await fs.readFile(finalPath)
+  // best-effort cleanup
+  outs.forEach(p => fs.unlink(p).catch(()=>{}))
+  fs.unlink(listPath).catch(()=>{})
+  fs.unlink(finalPath).catch(()=>{})
+  fs.rmdir(tmpDir).catch(()=>{})
+
   return new Uint8Array(bytes)
 })
 

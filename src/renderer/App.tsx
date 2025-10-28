@@ -20,17 +20,95 @@ export default function App() {
   const [src, setSrc] = useState<string | null>(null)     // blob URL for player
   const [fileName, setFileName] = useState<string>('')
   const [working, setWorking] = useState<string>('')
+  const [progress, setProgress] = useState<string>('')
 
   // timeline data
   const [clips, setClips] = useState<Clip[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [pxPerSec, setPxPerSec] = useState(120)
+  const [pxPerSec, setPxPerSec] = useState(() => {
+    const saved = localStorage.getItem('clipforge_pxPerSec')
+    return saved ? Number(saved) : 80
+  })
 
   // absolute playhead time across the sequence
   const [absTime, setAbsTime] = useState(0)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const lastBlobUrlRef = useRef<string | null>(null)
+  
+  // Wrapped setAbsTime that marks it as a user action from timeline
+  const setAbsTimeFromUser = (t: number) => {
+    // Pause the video when clicking timeline to prevent auto-play
+    const v = videoRef.current
+    if (v && !v.paused) {
+      v.pause()
+    }
+    setAbsTime(t)
+  }
+
+  // Listen to FFmpeg progress updates
+  useEffect(() => {
+    // @ts-expect-error preload
+    if (window.clipforge?.onFFmpegProgress) {
+      // @ts-expect-error preload
+      window.clipforge.onFFmpegProgress((message: string) => {
+        setProgress(message)
+      })
+    }
+  }, [])
+
+  // Save zoom level to localStorage
+  useEffect(() => {
+    localStorage.setItem('clipforge_pxPerSec', String(pxPerSec))
+  }, [pxPerSec])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Space = play/pause
+      if (e.code === 'Space' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault()
+        const v = videoRef.current
+        if (v) {
+          if (v.paused) v.play().catch(() => {})
+          else v.pause()
+        }
+        return
+      }
+
+      // [ = nudge In by -0.05s
+      if (e.key === '[' && selectedId) {
+        e.preventDefault()
+        setClips(prev => prev.map(c => {
+          if (c.id !== selectedId) return c
+          const newIn = Math.max(0, c.in - 0.05)
+          return { ...c, in: Math.min(newIn, c.out - 0.05) }
+        }))
+        return
+      }
+
+      // ] = nudge Out by +0.05s
+      if (e.key === ']' && selectedId) {
+        e.preventDefault()
+        setClips(prev => prev.map(c => {
+          if (c.id !== selectedId) return c
+          const newOut = Math.min(c.duration, c.out + 0.05)
+          return { ...c, out: Math.max(newOut, c.in + 0.05) }
+        }))
+        return
+      }
+
+      // Backspace = delete selected
+      if (e.key === 'Backspace' && selectedId) {
+        e.preventDefault()
+        deleteSelected()
+        return
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedId, clips]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // derive selected clip + local time mapping
   const sequenceSpans = (() => {
@@ -47,6 +125,7 @@ export default function App() {
   const selectedClip = clips.find(c => c.id === selectedId) || null
 
   // absTime -> selected clip & local time for the video element
+  // Only auto-select when there's no current selection
   useEffect(() => {
     if (sequenceSpans.arr.length === 0) return
     // if no selection, pick the block at absTime
@@ -66,7 +145,17 @@ export default function App() {
   // Load preview whenever the selection changes
   useEffect(() => {
     const c = selectedClip
-    if (!c) return
+    if (!c) {
+      // Clear video when no clips
+      if (lastBlobUrlRef.current) {
+        URL.revokeObjectURL(lastBlobUrlRef.current)
+        lastBlobUrlRef.current = null
+      }
+      setSrc(null)
+      setFileName('')
+      return
+    }
+    
     ;(async () => {
       try {
         // @ts-expect-error preload
@@ -94,7 +183,9 @@ export default function App() {
       const startAbs = sequenceSpans.arr.find(b => b.id === selectedClip.id)?.start ?? 0
       const local = selectedClip.in + Math.max(0, absTime - startAbs)
       if (Number.isFinite(local)) {
-        try { v.currentTime = Math.min(Math.max(0, local), selectedClip.out - 0.001) } catch {}
+        try { 
+          v.currentTime = Math.min(Math.max(0, local), selectedClip.out - 0.001)
+        } catch {}
       }
     }
 
@@ -106,20 +197,49 @@ export default function App() {
     }
   }, [src, absTime, selectedClip, sequenceSpans.arr])
 
-  // Scrub video → update absTime
+  // Seek video when absTime changes (scrubbing) - only when paused
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || !selectedClip || !v.duration || !Number.isFinite(v.duration)) return
+    
+    // Don't seek while video is playing - that causes stuttering
+    if (!v.paused) return
+    
+    // compute local time within selected clip
+    const startAbs = sequenceSpans.arr.find(b => b.id === selectedClip.id)?.start ?? 0
+    const local = selectedClip.in + Math.max(0, absTime - startAbs)
+    if (Number.isFinite(local)) {
+      const targetTime = Math.min(Math.max(0, local), selectedClip.out - 0.001)
+      // Only seek if difference is significant
+      if (Math.abs(v.currentTime - targetTime) > 0.05) {
+        try { 
+          v.currentTime = targetTime
+        } catch {}
+      }
+    }
+  }, [absTime, selectedClip, sequenceSpans.arr])
+
+  // Scrub video → update absTime (ONLY when video is playing)
   useEffect(() => {
     const v = videoRef.current
     if (!v || !selectedClip) return
+    
     const tick = () => {
-      // local time in selected clip
+      // ONLY update absTime when video is actually playing
+      // This prevents timeupdate from overwriting user clicks/seeks
+      if (v.paused) return
+      
+      // Calculate absTime from video's current time
       const startAbs = sequenceSpans.arr.find(b => b.id === selectedClip.id)?.start ?? 0
       const local = v.currentTime
-      const nextAbs = startAbs + Math.max(0, local - selectedClip.in)
-      setAbsTime(nextAbs)
+      const calculatedAbs = startAbs + Math.max(0, local - selectedClip.in)
+      setAbsTime(calculatedAbs)
     }
-    const onTime = () => tick()
-    v.addEventListener('timeupdate', onTime)
-    return () => { v.removeEventListener('timeupdate', onTime) }
+    
+    v.addEventListener('timeupdate', tick)
+    return () => { 
+      v.removeEventListener('timeupdate', tick)
+    }
   }, [selectedClip, sequenceSpans.arr])
 
   // Import: add one clip at a time (you can loop over paths to add many)
@@ -227,11 +347,64 @@ export default function App() {
     }))
   }
 
+  // Split at playhead
+  const splitAtPlayhead = () => {
+    if (!selectedId) return
+    const idx = clips.findIndex(c => c.id === selectedId)
+    if (idx < 0) return
+    const c = clips[idx]
+    const startAbs = sequenceSpans.arr.find(b => b.id === c.id)?.start ?? 0
+    const local = c.in + Math.max(0, absTime - startAbs)
+    if (local <= c.in + 0.05 || local >= c.out - 0.05) return // too close, skip
+
+    const left = { ...c, id: nanoid(8), out: local }
+    const right = { ...c, id: nanoid(8), in: local, name: c.name + ' (2)' }
+    setClips(prev => prev.toSpliced(idx, 1, left, right))
+    setSelectedId(right.id)
+  }
+
+  // Delete selected
+  const deleteSelected = () => {
+    if (!selectedId) return
+    setClips(prev => prev.filter(c => c.id !== selectedId))
+    setSelectedId(null)
+  }
+
+  // Export timeline (multi-clip)
+  const exportTimeline = async () => {
+    if (!clips.length) return
+    setWorking('Rendering timeline…')
+    setProgress('')
+    try {
+      const parts = sequenceSpans.arr.map(b => ({
+        inputPath: b.clip.path,
+        tIn: b.clip.in,
+        tOut: b.clip.out,
+      }))
+      // @ts-expect-error preload
+      const bytes: Uint8Array = await window.clipforge.exportTimeline(parts, 22)
+      const suggested = 'timeline_export.mp4'
+      // @ts-expect-error preload
+      const res = await window.clipforge.saveBytes(suggested, bytes)
+      setWorking(res.saved ? 'Exported ✅' : 'Canceled')
+      setProgress('')
+    } catch (e) {
+      console.error(e)
+      setWorking('Export failed ❌')
+      setProgress('')
+    } finally {
+      setTimeout(() => { setWorking(''); setProgress('') }, 1500)
+    }
+  }
+
   return (
     <div>
       <div className="toolbar">
         <button onClick={onImport}>➕ Import</button>
+        <button onClick={splitAtPlayhead} disabled={!selectedId}>✂️ Split</button>
+        <button onClick={deleteSelected} disabled={!selectedId}>🗑️ Delete</button>
         <button onClick={exportSelected} disabled={!selectedClip}>💾 Export MP4 (selected)</button>
+        <button onClick={exportTimeline} disabled={!clips.length}>📤 Export Timeline</button>
         <span className="meta">{working}</span>
       </div>
 
@@ -242,12 +415,7 @@ export default function App() {
               ref={videoRef}
               src={src}
               controls
-              style={{
-                width: '100%',
-                height: '100%',
-                objectFit: 'contain',   // ← keep full frame visible
-                background: '#000'      // ← avoid gray bars
-              }}
+              style={{}}
             />
           ) : (
             <div style={{ color: '#444', padding: 24 }}>
@@ -270,21 +438,33 @@ export default function App() {
             <TimelineCanvas
               clips={clips}
               selectedId={selectedId}
-              setSelectedId={(id) => {
-                setSelectedId(id)
-                const b = sequenceSpans.arr.find(x => x.id === id)
-                if (b) setAbsTime(b.start)
-              }}
+              setSelectedId={setSelectedId}
               pxPerSec={pxPerSec}
               setPxPerSec={setPxPerSec}
               absTime={absTime}
-              setAbsTime={setAbsTime}
+              setAbsTime={setAbsTimeFromUser}
               onReorder={onReorder}
               onTrim={onTrim}
             />
           </div>
         </div>
       </div>
+      {progress && (
+        <div style={{
+          position: 'fixed',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          background: 'rgba(0,0,0,0.8)',
+          color: '#fff',
+          padding: '8px 16px',
+          fontSize: '11px',
+          fontFamily: 'monospace',
+          zIndex: 1000
+        }}>
+          {progress}
+        </div>
+      )}
     </div>
   )
 }

@@ -121,3 +121,72 @@ ipcMain.handle("ffmpeg-trim", async (_evt, args) => {
   });
   return new Uint8Array(bytes);
 });
+ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
+  const { parts, reencodeCRF = 23 } = args;
+  if (!parts?.length) throw new Error("No parts");
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "clipforge_"));
+  const outs = [];
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    const out = path.join(tmpDir, `seg_${i}.mp4`);
+    const ffArgs = [
+      "-ss",
+      String(p.tIn),
+      "-to",
+      String(p.tOut),
+      "-i",
+      p.inputPath,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      String(reencodeCRF),
+      "-c:a",
+      "aac",
+      "-movflags",
+      "+faststart",
+      "-y",
+      out
+    ];
+    await new Promise((resolve, reject) => {
+      const proc = spawn(ffmpegPath, ffArgs, { stdio: ["ignore", "ignore", "pipe"] });
+      let stderrData = "";
+      proc.stderr?.on("data", (chunk) => {
+        stderrData += chunk.toString();
+        const lines = stderrData.split("\n");
+        for (const line of lines) {
+          if (line.includes("frame=") || line.includes("time=")) {
+            win?.webContents.send("ffmpeg-progress", `Segment ${i + 1}/${parts.length}: ${line.trim()}`);
+          }
+        }
+      });
+      proc.on("error", reject);
+      proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`trim exit ${code}`)));
+    });
+    outs.push(out);
+  }
+  const listPath = path.join(tmpDir, "list.txt");
+  const body = outs.map((o) => `file '${o.replace(/'/g, "'\\''")}'`).join("\n");
+  await fs.writeFile(listPath, body);
+  const finalPath = path.join(tmpDir, `final_${Date.now()}.mp4`);
+  await new Promise((resolve, reject) => {
+    const args2 = ["-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-y", finalPath];
+    const proc = spawn(ffmpegPath, args2, { stdio: ["ignore", "ignore", "pipe"] });
+    proc.stderr?.on("data", (chunk) => {
+      win?.webContents.send("ffmpeg-progress", `Concatenating: ${chunk.toString().trim()}`);
+    });
+    proc.on("error", reject);
+    proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`concat exit ${code}`)));
+  });
+  const bytes = await fs.readFile(finalPath);
+  outs.forEach((p) => fs.unlink(p).catch(() => {
+  }));
+  fs.unlink(listPath).catch(() => {
+  });
+  fs.unlink(finalPath).catch(() => {
+  });
+  fs.rmdir(tmpDir).catch(() => {
+  });
+  return new Uint8Array(bytes);
+});
