@@ -23653,20 +23653,40 @@ function TimelineCanvas({
     return () => window.removeEventListener("resize", onR);
   }, []);
   const spansByTrack = reactExports.useMemo(() => {
-    return tracks.map((trackClips) => {
-      const arr = [];
-      for (const c of trackClips) {
-        const len = Math.max(MIN_LEN, c.out - c.in);
-        const start = c.startTime ?? 0;
-        arr.push({ id: c.id, start, len, clip: c });
-      }
-      const total = arr.length > 0 ? Math.max(...arr.map((b) => b.start + b.len)) : 0;
-      return { blocks: arr, total };
-    });
+    try {
+      console.log("[TimelineCanvas] Computing spans for tracks:", tracks[0]?.length, tracks[1]?.length);
+      return tracks.map((trackClips, trackIdx) => {
+        const arr = [];
+        for (const c of trackClips) {
+          if (!c) {
+            console.error("[TimelineCanvas] Null clip in track", trackIdx);
+            continue;
+          }
+          const len = Math.max(MIN_LEN, c.out - c.in);
+          const start = c.startTime ?? 0;
+          arr.push({ id: c.id, start, len, clip: c });
+        }
+        const total = arr.length > 0 ? Math.max(...arr.map((b) => b.start + b.len)) : 0;
+        console.log("[TimelineCanvas] Track", trackIdx, ":", arr.length, "clips, total:", total);
+        return { blocks: arr, total };
+      });
+    } catch (err) {
+      console.error("[TimelineCanvas] Error computing spans:", err);
+      return [{ blocks: [], total: 0 }, { blocks: [], total: 0 }];
+    }
   }, [tracks]);
-  const maxTotal = Math.max(spansByTrack[0].total, spansByTrack[1].total, 10);
-  const width = Math.max(600, maxTotal * pxPerSec + 80);
+  const maxTotal = Math.max(spansByTrack[0]?.total || 0, spansByTrack[1]?.total || 0, 10);
+  const MAX_CANVAS_WIDTH = 3e4;
+  let effectivePxPerSec = pxPerSec;
+  let rawWidth = maxTotal * pxPerSec + 80;
+  if (rawWidth > MAX_CANVAS_WIDTH) {
+    effectivePxPerSec = (MAX_CANVAS_WIDTH - 80) / maxTotal;
+    rawWidth = MAX_CANVAS_WIDTH;
+    console.warn("[TimelineCanvas] Timeline too wide, auto-reducing zoom from", pxPerSec, "to", effectivePxPerSec.toFixed(2));
+  }
+  const width = Math.max(600, rawWidth);
   const contentWidth = Math.max(width, vw);
+  console.log("[TimelineCanvas] maxTotal:", maxTotal.toFixed(2), "s, zoom:", effectivePxPerSec.toFixed(2), "px/s, width:", width.toFixed(0), "px");
   const snapTime = (time, track, clipId, which) => {
     let snapped = time;
     const rounded = Math.round(time);
@@ -23697,7 +23717,7 @@ function TimelineCanvas({
     const x2 = pos.x;
     const y2 = pos.y;
     const track = y2 < ROW_H ? 0 : 1;
-    const t2 = Math.max(0, (x2 - 40) / pxPerSec);
+    const t2 = Math.max(0, (x2 - 40) / effectivePxPerSec);
     setAbsTime(t2);
     const spans = spansByTrack[track];
     for (const b of spans.blocks) {
@@ -23719,7 +23739,7 @@ function TimelineCanvas({
     const y2 = e.clientY - rect.top;
     const track = y2 < ROW_H ? 0 : 1;
     const spans = spansByTrack[track];
-    const tSec = Math.max(0, (x2 - 40) / pxPerSec);
+    const tSec = Math.max(0, (x2 - 40) / effectivePxPerSec);
     let idx = 0;
     for (let i = 0; i < spans.blocks.length; i++) {
       const clipStart = spans.blocks[i].start;
@@ -23756,10 +23776,10 @@ function TimelineCanvas({
             onMouseDown: onBackgroundMouseDown
           }
         ),
-        Array.from({ length: Math.ceil(width / pxPerSec) + 1 }).map((_, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+        Array.from({ length: Math.ceil(width / effectivePxPerSec) + 1 }).map((_, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
           Line2,
           {
-            points: [40 + i * pxPerSec, 0, 40 + i * pxPerSec, TL_HEIGHT],
+            points: [40 + i * effectivePxPerSec, 0, 40 + i * effectivePxPerSec, TL_HEIGHT],
             stroke: "#eee",
             strokeWidth: 1,
             listening: false
@@ -23780,8 +23800,8 @@ function TimelineCanvas({
           const spans = spansByTrack[t2];
           const clipY = CLIP_Y(t2);
           return spans.blocks.map((b) => {
-            const x2 = 40 + b.start * pxPerSec;
-            const actualW = b.len * pxPerSec;
+            const x2 = 40 + b.start * effectivePxPerSec;
+            const actualW = b.len * effectivePxPerSec;
             const w2 = Math.max(MIN_PX, actualW);
             const isSel = selected?.track === t2 && selected.id === b.id;
             const c = b.clip;
@@ -23812,12 +23832,12 @@ function TimelineCanvas({
                         const deltaX = e.target.x();
                         e.target.x(0);
                         const newX = x2 + deltaX;
-                        const newStartTime = Math.max(0, (newX - 40) / pxPerSec);
+                        const newStartTime = Math.max(0, (newX - 40) / effectivePxPerSec);
                         onMove(t2, b.id, newStartTime);
                       },
                       onMouseDown: (e) => {
                         const clickX = e.target.getStage().getPointerPosition().x;
-                        const time = Math.max(0, (clickX - 40) / pxPerSec);
+                        const time = Math.max(0, (clickX - 40) / effectivePxPerSec);
                         setAbsTime(time);
                         setSelected({ track: t2, id: c.id });
                       }
@@ -23865,7 +23885,7 @@ function TimelineCanvas({
                         const onMove2 = () => {
                           const currentX = stage.getPointerPosition()?.x ?? startX;
                           const deltaX = currentX - startX;
-                          const deltaSec = deltaX / pxPerSec;
+                          const deltaSec = deltaX / effectivePxPerSec;
                           let nextIn = startIn + deltaSec;
                           nextIn = Math.max(0, Math.min(nextIn, c.out - MIN_LEN));
                           nextIn = snapTime(nextIn, t2, c.id, "in");
@@ -23902,7 +23922,7 @@ function TimelineCanvas({
                         const onMove2 = () => {
                           const currentX = stage.getPointerPosition()?.x ?? startX;
                           const deltaX = currentX - startX;
-                          const deltaSec = deltaX / pxPerSec;
+                          const deltaSec = deltaX / effectivePxPerSec;
                           let nextOut = startOut + deltaSec;
                           nextOut = Math.max(c.in + MIN_LEN, Math.min(nextOut, c.duration));
                           nextOut = snapTime(nextOut, t2, c.id, "out");
@@ -23929,9 +23949,9 @@ function TimelineCanvas({
           Line2,
           {
             points: [
-              40 + absTime * pxPerSec,
+              40 + absTime * effectivePxPerSec,
               ROW_Y(activeTrack),
-              40 + absTime * pxPerSec,
+              40 + absTime * effectivePxPerSec,
               ROW_Y(activeTrack) + ROW_H
             ],
             stroke: "#e11d48",
@@ -24805,7 +24825,8 @@ function RecordingPanel({ onRecordingComplete, videoRef, setIsRecording }) {
   ] });
 }
 function MediaLibrary({
-  items
+  items,
+  onDelete
 }) {
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
     width: 240,
@@ -24830,12 +24851,49 @@ function MediaLibrary({
           borderRadius: 6,
           overflow: "hidden",
           background: "#fafafa",
-          cursor: "grab"
+          cursor: "grab",
+          position: "relative"
         },
         title: `${it.name}
 ${it.duration.toFixed(2)}s${it.width ? ` • ${it.width}×${it.height}` : ""}`,
         children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { background: "#000", height: 112, display: "flex", alignItems: "center", justifyContent: "center" }, children: it.thumb ? /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: it.thumb, alt: it.name, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { color: "#888", fontSize: 12 }, children: "No preview" }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { background: "#000", height: 112, display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }, children: [
+            it.thumb ? /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: it.thumb, alt: it.name, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { color: "#888", fontSize: 12 }, children: "No preview" }),
+            onDelete && /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (confirm(`Remove "${it.name}" from library?`)) {
+                    onDelete(it.id);
+                  }
+                },
+                style: {
+                  position: "absolute",
+                  top: 4,
+                  right: 4,
+                  width: 24,
+                  height: 24,
+                  borderRadius: 4,
+                  border: "none",
+                  background: "rgba(0,0,0,0.7)",
+                  color: "#fff",
+                  fontSize: 16,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
+                  transition: "background 0.2s"
+                },
+                onMouseEnter: (e) => e.currentTarget.style.background = "rgba(220, 38, 38, 0.9)",
+                onMouseLeave: (e) => e.currentTarget.style.background = "rgba(0,0,0,0.7)",
+                title: "Remove from library",
+                children: "×"
+              }
+            )
+          ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: "6px 8px" }, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: it.name }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { fontSize: 11, color: "#555" }, children: [
@@ -24904,9 +24962,26 @@ function App() {
   reactExports.useEffect(() => {
     if (window.clipforge?.projectLoad) {
       window.clipforge.projectLoad()?.then((p2) => {
-        if (p2?.tracks) setTracks(p2.tracks);
-        if (p2?.pxPerSec) setPxPerSec(p2.pxPerSec);
-        if (p2?.library) setLibrary(p2.library);
+        console.log("[ProjectLoad] Loaded project:", p2);
+        if (p2?.tracks && Array.isArray(p2.tracks)) {
+          const isValid = p2.tracks.length === 2 && Array.isArray(p2.tracks[0]) && Array.isArray(p2.tracks[1]);
+          if (isValid) {
+            console.log("[ProjectLoad] Restoring tracks:", p2.tracks[0].length, "clips on track 0,", p2.tracks[1].length, "clips on track 1");
+            setTracks(p2.tracks);
+          } else {
+            console.error("[ProjectLoad] Invalid tracks structure, ignoring");
+          }
+        }
+        if (p2?.pxPerSec && typeof p2.pxPerSec === "number") {
+          console.log("[ProjectLoad] Restoring zoom:", p2.pxPerSec);
+          setPxPerSec(p2.pxPerSec);
+        }
+        if (p2?.library && Array.isArray(p2.library)) {
+          console.log("[ProjectLoad] Restoring library:", p2.library.length, "items");
+          setLibrary(p2.library);
+        }
+      }).catch((err) => {
+        console.error("[ProjectLoad] Failed to load project:", err);
       });
     }
   }, []);
@@ -24974,26 +25049,32 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selected, tracks]);
   const sequenceSpans = (() => {
-    const arrTrack = tracks[activeTrack];
-    const arr = arrTrack.map((c) => {
-      const len = Math.max(0.05, c.out - c.in);
-      const start = c.startTime ?? 0;
-      return { id: c.id, start, len, clip: c };
-    });
-    const total = arr.length > 0 ? Math.max(...arr.map((b) => b.start + b.len)) : 0;
-    return { arr, total };
+    try {
+      const arrTrack = tracks[activeTrack] || [];
+      const arr = arrTrack.map((c) => {
+        const len = Math.max(0.05, c.out - c.in);
+        const start = c.startTime ?? 0;
+        return { id: c.id, start, len, clip: c };
+      });
+      const total = arr.length > 0 ? Math.max(...arr.map((b) => b.start + b.len)) : 0;
+      return { arr, total };
+    } catch (err) {
+      console.error("[sequenceSpans] Error:", err);
+      return { arr: [], total: 0 };
+    }
   })();
-  const selectedClip = selected ? tracks[selected.track].find((c) => c.id === selected.id) || null : null;
+  const selectedClip = selected ? tracks[selected.track]?.find((c) => c.id === selected.id) || null : null;
   reactExports.useEffect(() => {
     if (sequenceSpans.arr.length === 0) return;
     if (!selectedClip) {
-      let acc = 0;
       for (const b of sequenceSpans.arr) {
-        if (absTime >= acc && absTime <= acc + b.len + 1e-6) {
+        const clipStart = b.start;
+        const clipEnd = b.start + b.len;
+        if (absTime >= clipStart && absTime <= clipEnd + 1e-6) {
+          console.log("[Auto-select] Selecting clip at absTime", absTime, ":", b.clip.name);
           setSelected({ track: activeTrack, id: b.id });
           break;
         }
-        acc += b.len;
       }
     }
   }, [absTime, sequenceSpans.total]);
@@ -25184,19 +25265,34 @@ function App() {
     }
   };
   const addToLibrary = async (absPath) => {
-    const name = absPath.split(/[\\/]/).pop() || "clip";
-    const meta = await probeMedia(absPath);
-    const thumb = await captureThumb(absPath, mimeFor(absPath));
-    const item = {
-      id: nanoid(8),
-      name,
-      path: absPath,
-      duration: meta.duration || 1,
-      width: meta.width,
-      height: meta.height,
-      thumb
-    };
-    setLibrary((prev) => [...prev, item]);
+    try {
+      console.log("[addToLibrary] Processing:", absPath);
+      const name = absPath.split(/[\\/]/).pop() || "clip";
+      console.log("[addToLibrary] Probing media...");
+      const meta = await probeMedia(absPath);
+      console.log("[addToLibrary] Meta:", meta);
+      console.log("[addToLibrary] Capturing thumbnail...");
+      const thumb = await captureThumb(absPath, mimeFor(absPath));
+      console.log("[addToLibrary] Thumb captured:", thumb ? "yes" : "no");
+      const item = {
+        id: nanoid(8),
+        name,
+        path: absPath,
+        duration: meta.duration || 1,
+        width: meta.width,
+        height: meta.height,
+        thumb
+      };
+      console.log("[addToLibrary] Adding to library state");
+      setLibrary((prev) => [...prev, item]);
+      console.log("[addToLibrary] Done");
+    } catch (err) {
+      console.error("[addToLibrary] Failed for", absPath, ":", err);
+      throw err;
+    }
+  };
+  const removeFromLibrary = (id2) => {
+    setLibrary((prev) => prev.filter((item) => item.id !== id2));
   };
   const appendClipToTrackEnd = (track, item) => {
     const color = COLORS[tracks[track].length % COLORS.length];
@@ -25223,43 +25319,81 @@ function App() {
     setAbsTime(rightmostEdge);
   };
   const insertClipAt = (track, index, item) => {
-    const color = COLORS[tracks[track].length % COLORS.length];
-    const existingClips = tracks[track];
-    let startTime = 0;
-    if (index > 0 && index <= existingClips.length) {
-      const prevClip = existingClips[index - 1];
-      if (prevClip) {
-        startTime = (prevClip.startTime ?? 0) + (prevClip.out - prevClip.in);
+    try {
+      console.log("[insertClipAt] track:", track, "index:", index, "item:", item.name);
+      const color = COLORS[tracks[track].length % COLORS.length];
+      const existingClips = tracks[track];
+      console.log("[insertClipAt] existingClips count:", existingClips.length);
+      let startTime = 0;
+      if (index > 0 && index <= existingClips.length) {
+        const sorted = [...existingClips].sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
+        if (sorted[index - 1]) {
+          const prevClip = sorted[index - 1];
+          startTime = (prevClip.startTime ?? 0) + (prevClip.out - prevClip.in);
+        }
       }
+      console.log("[insertClipAt] initial startTime:", startTime);
+      const newClipDuration = Math.max(0.05, item.duration || 1);
+      console.log("[insertClipAt] newClipDuration:", newClipDuration);
+      const otherClips = existingClips.map((c) => ({
+        start: c.startTime ?? 0,
+        end: (c.startTime ?? 0) + (c.out - c.in)
+      })).sort((a, b) => a.start - b.start);
+      console.log("[insertClipAt] otherClips:", otherClips);
+      for (const other of otherClips) {
+        const targetEnd = startTime + newClipDuration;
+        if (startTime < other.end && targetEnd > other.start) {
+          console.log("[insertClipAt] collision detected, snapping from", startTime, "to", other.end);
+          startTime = other.end;
+        }
+      }
+      console.log("[insertClipAt] final startTime:", startTime);
+      const clip = {
+        id: nanoid(8),
+        name: item.name,
+        path: item.path,
+        in: 0,
+        out: newClipDuration,
+        duration: item.duration || 1,
+        color,
+        width: item.width,
+        height: item.height,
+        startTime
+      };
+      console.log("[insertClipAt] created clip:", clip);
+      setTracks((prev) => {
+        const copy = prev.map((r2) => r2.slice());
+        copy[track].push(clip);
+        return copy;
+      });
+      console.log("[insertClipAt] tracks updated");
+      setSelected({ track, id: clip.id });
+      console.log("[insertClipAt] selection updated");
+    } catch (err) {
+      console.error("[insertClipAt] ERROR:", err);
+      throw err;
     }
-    const clip = {
-      id: nanoid(8),
-      name: item.name,
-      path: item.path,
-      in: 0,
-      out: Math.max(0.05, item.duration || 1),
-      duration: item.duration || 1,
-      color,
-      width: item.width,
-      height: item.height,
-      startTime
-    };
-    setTracks((prev) => {
-      const copy = prev.map((r2) => r2.slice());
-      const clamped = Math.max(0, Math.min(copy[track].length, index));
-      copy[track].splice(clamped, 0, clip);
-      return copy;
-    });
-    setSelected({ track, id: clip.id });
   };
   const onImport = async () => {
-    if (!window.clipforge?.openVideos) {
-      alert("Bridge not available — check preload and sandbox:false");
-      return;
+    try {
+      console.log("[Import] Starting import...");
+      if (!window.clipforge?.openVideos) {
+        alert("Bridge not available — check preload and sandbox:false");
+        return;
+      }
+      const paths = await window.clipforge.openVideos();
+      console.log("[Import] Got paths:", paths);
+      if (!paths?.length) return;
+      for (const p2 of paths) {
+        console.log("[Import] Adding to library:", p2);
+        await addToLibrary(p2);
+        console.log("[Import] Added successfully:", p2);
+      }
+      console.log("[Import] All imports complete");
+    } catch (err) {
+      console.error("[Import] Import failed:", err);
+      alert(`Import failed: ${err}`);
     }
-    const paths = await window.clipforge.openVideos();
-    if (!paths?.length) return;
-    for (const p2 of paths) await addToLibrary(p2);
   };
   const probeMedia = async (path) => {
     try {
@@ -25328,8 +25462,31 @@ function App() {
   const onMove = (track, id2, newStartTime) => {
     setTracks((prev) => {
       const copy = prev.map((r2) => r2.slice());
+      const clip = copy[track].find((c) => c.id === id2);
+      if (!clip) return prev;
+      const clipDuration = clip.out - clip.in;
+      let targetStart = Math.max(0, newStartTime);
+      const otherClips = copy[track].filter((c) => c.id !== id2).map((c) => ({
+        start: c.startTime ?? 0,
+        end: (c.startTime ?? 0) + (c.out - c.in),
+        clip: c
+      })).sort((a, b) => a.start - b.start);
+      for (const other of otherClips) {
+        const targetEnd = targetStart + clipDuration;
+        if (targetStart < other.end && targetEnd > other.start) {
+          const snapBefore = other.start - clipDuration;
+          const snapAfter = other.end;
+          const distBefore = Math.abs(snapBefore - targetStart);
+          const distAfter = Math.abs(snapAfter - targetStart);
+          if (snapBefore >= 0 && distBefore < distAfter) {
+            targetStart = snapBefore;
+          } else {
+            targetStart = snapAfter;
+          }
+        }
+      }
       copy[track] = copy[track].map(
-        (c) => c.id === id2 ? { ...c, startTime: newStartTime } : c
+        (c) => c.id === id2 ? { ...c, startTime: targetStart } : c
       );
       return copy;
     });
@@ -25416,6 +25573,28 @@ function App() {
   };
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "toolbar", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          onClick: () => {
+            if (tracks[0].length || tracks[1].length || library.length) {
+              if (!confirm("Clear all clips and library items? This cannot be undone.")) return;
+            }
+            setTracks([[], []]);
+            setLibrary([]);
+            setSelected(null);
+            setAbsTime(0);
+            setFileName("");
+            if (videoRef.current) {
+              videoRef.current.src = "";
+              videoRef.current.load();
+            }
+          },
+          style: { background: "#ef4444", color: "#fff", fontWeight: 500 },
+          title: "Start a new project (clears everything)",
+          children: "🆕 New Project"
+        }
+      ),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: onImport, children: "➕ Import" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: splitAtPlayhead, disabled: !selected, children: "✂️ Split" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: deleteSelected, disabled: !selected, children: "🗑️ Delete" }),
@@ -25471,7 +25650,13 @@ function App() {
               setProgress("Extracting audio and transcribing...");
               try {
                 const res = await window.clipforge.aiSummarize({ parts, targetRatio: pct / 100 });
-                setWorking(res.saved ? "AI Summary saved ✅" : "Canceled");
+                if (res.saved && res.path) {
+                  setWorking("Adding summary to library...");
+                  await addToLibrary(res.path);
+                  setWorking("AI Summary created & added to library ✅");
+                } else {
+                  setWorking("Canceled");
+                }
                 setProgress("");
               } catch (e) {
                 console.error(e);
@@ -25501,7 +25686,7 @@ function App() {
       height: "calc(100vh - 52px)"
     }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { gridArea: "lib", display: "flex", flexDirection: "column" }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(MediaLibrary, { items: library }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(MediaLibrary, { items: library, onDelete: removeFromLibrary }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 8, borderTop: "1px solid #eee", borderRight: "1px solid #eee" }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, marginBottom: 6 }, children: "Active track:" }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6 }, children: [
@@ -25575,10 +25760,10 @@ function App() {
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "timelineHeader", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: "Timeline" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { marginLeft: 8, fontSize: 12, color: "#666" }, children: "Tracks: Main (0) + Overlay (1)" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.max(10, Math.floor(v2 * 0.8))), style: { padding: "2px 6px", marginLeft: "auto" }, children: "–" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.max(0.5, Math.floor(v2 * 0.8 * 100) / 100)), style: { padding: "2px 6px", marginLeft: "auto" }, children: "–" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.min(800, Math.ceil(v2 * 1.25))), style: { padding: "2px 6px" }, children: "+" }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { color: "#666" }, children: [
-            Math.round(pxPerSec),
+            pxPerSec < 10 ? pxPerSec.toFixed(1) : Math.round(pxPerSec),
             " px/s"
           ] })
         ] }),
@@ -25596,9 +25781,18 @@ function App() {
             onMove,
             onTrim,
             onExternalDrop: (track, atIndex, libId) => {
-              const it = library.find((x2) => x2.id === libId);
-              if (!it) return;
-              insertClipAt(track, atIndex, it);
+              try {
+                console.log("[onExternalDrop] track:", track, "atIndex:", atIndex, "libId:", libId);
+                const it = library.find((x2) => x2.id === libId);
+                console.log("[onExternalDrop] found item:", it?.name);
+                if (!it) {
+                  console.error("[onExternalDrop] item not found in library!");
+                  return;
+                }
+                insertClipAt(track, atIndex, it);
+              } catch (err) {
+                console.error("[onExternalDrop] ERROR:", err);
+              }
             }
           }
         ) })
@@ -25626,5 +25820,43 @@ function App() {
     }, children: progress })
   ] });
 }
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error2) {
+    return { hasError: true, error: error2 };
+  }
+  componentDidCatch(error2, errorInfo) {
+    console.error("[ErrorBoundary] Caught error:", error2);
+    console.error("[ErrorBoundary] Error info:", errorInfo);
+    console.error("[ErrorBoundary] Stack:", error2.stack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 40, fontFamily: "monospace" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { style: { color: "red" }, children: "⚠️ App Crashed" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "Error:" }),
+          " ",
+          this.state.error?.message
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { style: { background: "#f5f5f5", padding: 20, overflow: "auto" }, children: this.state.error?.stack }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            onClick: () => window.location.reload(),
+            style: { padding: "10px 20px", fontSize: 16, cursor: "pointer" },
+            children: "Reload App"
+          }
+        )
+      ] });
+    }
+    return this.props.children;
+  }
+}
 console.log("[renderer] main.tsx loaded");
-createRoot(document.getElementById("root")).render(/* @__PURE__ */ jsxRuntimeExports.jsx(App, {}));
+createRoot(document.getElementById("root")).render(
+  /* @__PURE__ */ jsxRuntimeExports.jsx(ErrorBoundary, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(App, {}) })
+);
