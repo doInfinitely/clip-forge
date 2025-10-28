@@ -292,20 +292,20 @@ export default function PiPRecorder({ onRecordingComplete, videoRef: externalVid
     <div style={{ padding:10, display:'grid', gap:10 }}>
 
       {/* Compact header with chosen items */}
-      {chosen && camId && (
+      {chosen && camId && !recording && (
         <div style={{ padding:8, background:'#f0f9ff', border:'2px solid #2563eb', borderRadius:6, fontSize:12 }}>
           <div><strong>Screen:</strong> {chosen.name}</div>
           <div style={{ marginTop:4 }}>
             <strong>Camera:</strong> {cams.find(c => c.deviceId === camId)?.label || 'Camera'} | 
             <strong> Corner:</strong> {pipCorner} | 
             <strong> Size:</strong> {Math.round(pipScale*100)}%
-            <button onClick={() => { setChosen(null); setCamId(null) }} style={{ marginLeft:8, fontSize:11, padding:'2px 6px' }}>Change</button>
+            <button onClick={() => { setChosen(null) }} style={{ marginLeft:8, fontSize:11, padding:'2px 6px' }}>Change Source</button>
           </div>
         </div>
       )}
       
-      {/* pickers - only show when not chosen */}
-      {(!chosen || !camId) && (
+      {/* pickers - only show when not chosen and not recording */}
+      {!chosen && !recording && (
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
           {/* screen/window list */}
           <div style={{ border:'1px solid #eee', borderRadius:8, padding:8, background:'#fafafa', maxHeight:120, overflowY:'auto' }}>

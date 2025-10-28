@@ -1044,7 +1044,7 @@ export default function App() {
           <div className="timelineHeader">
             <b>Timeline</b>
             <span style={{ marginLeft:8, fontSize:12, color:'#666' }}>Tracks: Main (0) + Overlay (1)</span>
-            <button onClick={() => setPxPerSec(v => Math.max(0.5, Math.floor(v * 0.8 * 100) / 100))} style={{ padding:'2px 6px', marginLeft:'auto' }}>–</button>
+            <button onClick={() => setPxPerSec(v => Math.max(0.01, Math.floor(v * 0.8 * 100) / 100))} style={{ padding:'2px 6px', marginLeft:'auto' }}>–</button>
             <button onClick={() => setPxPerSec(v => Math.min(800, Math.ceil(v * 1.25)))} style={{ padding:'2px 6px' }}>+</button>
             <span style={{ color:'#666' }}>{pxPerSec < 10 ? pxPerSec.toFixed(1) : Math.round(pxPerSec)} px/s</span>
           </div>

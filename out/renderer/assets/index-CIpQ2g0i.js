@@ -24604,7 +24604,7 @@ function PiPRecorder({ onRecordingComplete, videoRef: externalVideoRef, setIsRec
     setStatus("Finalizing…");
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 10, display: "grid", gap: 10 }, children: [
-    chosen && camId && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 8, background: "#f0f9ff", border: "2px solid #2563eb", borderRadius: 6, fontSize: 12 }, children: [
+    chosen && camId && !recording && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 8, background: "#f0f9ff", border: "2px solid #2563eb", borderRadius: 6, fontSize: 12 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "Screen:" }),
         " ",
@@ -24625,11 +24625,10 @@ function PiPRecorder({ onRecordingComplete, videoRef: externalVideoRef, setIsRec
         "%",
         /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => {
           setChosen(null);
-          setCamId(null);
-        }, style: { marginLeft: 8, fontSize: 11, padding: "2px 6px" }, children: "Change" })
+        }, style: { marginLeft: 8, fontSize: 11, padding: "2px 6px" }, children: "Change Source" })
       ] })
     ] }),
-    (!chosen || !camId) && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }, children: [
+    !chosen && !recording && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { border: "1px solid #eee", borderRadius: 8, padding: 8, background: "#fafafa", maxHeight: 120, overflowY: "auto" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, marginBottom: 6 }, children: "Pick Screen/Window" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, 140px)", gap: 6 }, children: sources.map((s) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
@@ -24913,6 +24912,8 @@ function Settings({ onClose }) {
   const [loading, setLoading] = reactExports.useState(true);
   const [saving, setSaving] = reactExports.useState(false);
   const [showKey, setShowKey] = reactExports.useState(false);
+  const [ffmpegStatus, setFfmpegStatus] = reactExports.useState("");
+  const [ffmpegTesting, setFfmpegTesting] = reactExports.useState(false);
   reactExports.useEffect(() => {
     window.clipforge?.settingsLoad?.().then((settings) => {
       if (settings?.openaiApiKey) {
@@ -24933,6 +24934,23 @@ function Settings({ onClose }) {
       alert(`Failed to save: ${err.message}`);
     } finally {
       setSaving(false);
+    }
+  }
+  async function testFFmpeg() {
+    setFfmpegTesting(true);
+    setFfmpegStatus("Testing FFmpeg...");
+    try {
+      const result = await window.clipforge.testFFmpeg();
+      if (result.success) {
+        setFfmpegStatus(`✅ FFmpeg works! ${result.output?.split("\n")[0] || ""}`);
+      } else {
+        setFfmpegStatus(`❌ FFmpeg failed: ${result.error || "Unknown error"}
+Path: ${result.path || "unknown"}`);
+      }
+    } catch (err) {
+      setFfmpegStatus(`❌ Error testing FFmpeg: ${err.message}`);
+    } finally {
+      setFfmpegTesting(false);
     }
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
@@ -25037,6 +25055,48 @@ function Settings({ onClose }) {
           background: "#d1fae5",
           borderRadius: 4
         }, children: "🔒 Your API key is stored locally on your device and never shared." })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
+        padding: 12,
+        background: "#f9fafb",
+        border: "1px solid #e5e7eb",
+        borderRadius: 6
+      }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("label", { style: { fontSize: 13, fontWeight: "bold" }, children: "FFmpeg Diagnostics" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              onClick: testFFmpeg,
+              disabled: ffmpegTesting,
+              style: {
+                padding: "4px 12px",
+                fontSize: 12,
+                border: "1px solid #ddd",
+                borderRadius: 4,
+                background: "white",
+                cursor: ffmpegTesting ? "wait" : "pointer"
+              },
+              children: ffmpegTesting ? "Testing..." : "🔧 Test FFmpeg"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+          fontSize: 11,
+          color: "#666",
+          marginBottom: 4
+        }, children: "Required for AI Summary and video export features" }),
+        ffmpegStatus && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+          fontSize: 11,
+          fontFamily: "monospace",
+          padding: 8,
+          background: ffmpegStatus.includes("✅") ? "#d1fae5" : "#fee2e2",
+          color: ffmpegStatus.includes("✅") ? "#065f46" : "#991b1b",
+          borderRadius: 4,
+          marginTop: 8,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all"
+        }, children: ffmpegStatus })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -25949,7 +26009,7 @@ function App() {
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "timelineHeader", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: "Timeline" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { marginLeft: 8, fontSize: 12, color: "#666" }, children: "Tracks: Main (0) + Overlay (1)" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.max(0.5, Math.floor(v2 * 0.8 * 100) / 100)), style: { padding: "2px 6px", marginLeft: "auto" }, children: "–" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.max(0.01, Math.floor(v2 * 0.8 * 100) / 100)), style: { padding: "2px 6px", marginLeft: "auto" }, children: "–" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.min(800, Math.ceil(v2 * 1.25))), style: { padding: "2px 6px" }, children: "+" }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { color: "#666" }, children: [
             pxPerSec < 10 ? pxPerSec.toFixed(1) : Math.round(pxPerSec),

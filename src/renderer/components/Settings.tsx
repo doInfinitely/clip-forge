@@ -9,6 +9,8 @@ export default function Settings({ onClose }: Props) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [showKey, setShowKey] = useState(false)
+  const [ffmpegStatus, setFfmpegStatus] = useState<string>('')
+  const [ffmpegTesting, setFfmpegTesting] = useState(false)
 
   useEffect(() => {
     // Load existing settings
@@ -34,6 +36,24 @@ export default function Settings({ onClose }: Props) {
       alert(`Failed to save: ${err.message}`)
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function testFFmpeg() {
+    setFfmpegTesting(true)
+    setFfmpegStatus('Testing FFmpeg...')
+    try {
+      // @ts-expect-error preload
+      const result = await window.clipforge.testFFmpeg()
+      if (result.success) {
+        setFfmpegStatus(`✅ FFmpeg works! ${result.output?.split('\n')[0] || ''}`)
+      } else {
+        setFfmpegStatus(`❌ FFmpeg failed: ${result.error || 'Unknown error'}\nPath: ${result.path || 'unknown'}`)
+      }
+    } catch (err: any) {
+      setFfmpegStatus(`❌ Error testing FFmpeg: ${err.message}`)
+    } finally {
+      setFfmpegTesting(false)
     }
   }
 
@@ -141,6 +161,56 @@ export default function Settings({ onClose }: Props) {
               }}>
                 🔒 Your API key is stored locally on your device and never shared.
               </div>
+            </div>
+
+            {/* FFmpeg Diagnostics */}
+            <div style={{ 
+              padding: 12, 
+              background: '#f9fafb', 
+              border: '1px solid #e5e7eb',
+              borderRadius: 6
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <label style={{ fontSize: 13, fontWeight: 'bold' }}>
+                  FFmpeg Diagnostics
+                </label>
+                <button
+                  onClick={testFFmpeg}
+                  disabled={ffmpegTesting}
+                  style={{
+                    padding: '4px 12px',
+                    fontSize: 12,
+                    border: '1px solid #ddd',
+                    borderRadius: 4,
+                    background: 'white',
+                    cursor: ffmpegTesting ? 'wait' : 'pointer'
+                  }}
+                >
+                  {ffmpegTesting ? 'Testing...' : '🔧 Test FFmpeg'}
+                </button>
+              </div>
+              <div style={{ 
+                fontSize: 11, 
+                color: '#666',
+                marginBottom: 4
+              }}>
+                Required for AI Summary and video export features
+              </div>
+              {ffmpegStatus && (
+                <div style={{ 
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  padding: 8,
+                  background: ffmpegStatus.includes('✅') ? '#d1fae5' : '#fee2e2',
+                  color: ffmpegStatus.includes('✅') ? '#065f46' : '#991b1b',
+                  borderRadius: 4,
+                  marginTop: 8,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all'
+                }}>
+                  {ffmpegStatus}
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>

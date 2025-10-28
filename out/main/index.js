@@ -6880,15 +6880,55 @@ async function getOpenAIKey() {
   }
 }
 const nodeRequire = createRequire(import.meta.url);
-const ffmpegPathRaw = nodeRequire("ffmpeg-static") || "";
-const ffmpegPath = app.isPackaged ? ffmpegPathRaw.replace("app.asar", "app.asar.unpacked") : ffmpegPathRaw;
-if (!ffmpegPath || !fsSync.existsSync(ffmpegPath)) {
-  console.error("[main] ffmpeg-static path not found:", ffmpegPath);
-} else {
-  fs$1.chmod(ffmpegPath, 493).catch(() => {
-  });
-  console.log("[main] ffmpeg path:", ffmpegPath);
+function getFFmpegPath() {
+  try {
+    const ffmpegPathRaw = nodeRequire("ffmpeg-static") || "";
+    console.log("[main] ffmpeg-static raw path:", ffmpegPathRaw);
+    console.log("[main] app.isPackaged:", app.isPackaged);
+    console.log("[main] __dirname:", __dirname);
+    if (!ffmpegPathRaw) {
+      throw new Error("ffmpeg-static returned empty path");
+    }
+    let ffmpegPath2 = ffmpegPathRaw;
+    if (app.isPackaged) {
+      ffmpegPath2 = ffmpegPathRaw.replace(/app\.asar([\/\\])/g, "app.asar.unpacked$1").replace(/app\.asar$/g, "app.asar.unpacked");
+      console.log("[main] ffmpeg path after asar replacement:", ffmpegPath2);
+    }
+    if (!fsSync.existsSync(ffmpegPath2)) {
+      console.error("[main] ❌ ffmpeg binary not found at:", ffmpegPath2);
+      const alternatives = [
+        ffmpegPathRaw,
+        ffmpegPathRaw.replace("app.asar", "app.asar.unpacked"),
+        path$2.join(process.resourcesPath, "app.asar.unpacked", "node_modules", "ffmpeg-static", "ffmpeg")
+      ];
+      for (const alt of alternatives) {
+        console.log("[main] Trying alternative path:", alt);
+        if (fsSync.existsSync(alt)) {
+          console.log("[main] ✅ Found ffmpeg at alternative path:", alt);
+          ffmpegPath2 = alt;
+          break;
+        }
+      }
+      if (!fsSync.existsSync(ffmpegPath2)) {
+        throw new Error(`ffmpeg binary not found. Tried paths: ${alternatives.join(", ")}`);
+      }
+    }
+    if (process.platform !== "win32") {
+      try {
+        fsSync.chmodSync(ffmpegPath2, 493);
+        console.log("[main] ✅ Made ffmpeg executable");
+      } catch (chmodErr) {
+        console.warn("[main] ⚠️ Could not chmod ffmpeg:", chmodErr);
+      }
+    }
+    console.log("[main] ✅ ffmpeg ready at:", ffmpegPath2);
+    return ffmpegPath2;
+  } catch (err) {
+    console.error("[main] ❌ Fatal error getting ffmpeg path:", err);
+    throw err;
+  }
 }
+const ffmpegPath = getFFmpegPath();
 let win = null;
 async function createWindow() {
   win = new BrowserWindow({
@@ -6985,6 +7025,66 @@ ipcMain.handle("project-load", async () => {
     return null;
   }
 });
+ipcMain.handle("test-ffmpeg", async () => {
+  try {
+    console.log("[test-ffmpeg] Testing ffmpeg at:", ffmpegPath);
+    console.log("[test-ffmpeg] File exists:", fsSync.existsSync(ffmpegPath));
+    if (!fsSync.existsSync(ffmpegPath)) {
+      return {
+        success: false,
+        error: `FFmpeg binary not found at: ${ffmpegPath}`,
+        path: ffmpegPath,
+        exists: false
+      };
+    }
+    const stats = fsSync.statSync(ffmpegPath);
+    console.log("[test-ffmpeg] File mode:", stats.mode.toString(8));
+    console.log("[test-ffmpeg] File size:", stats.size);
+    const result = await new Promise((resolve) => {
+      const proc = spawn(ffmpegPath, ["-version"], { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      proc.stderr?.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      proc.on("error", (err) => {
+        console.error("[test-ffmpeg] Spawn error:", err);
+        resolve({ success: false, error: err.message });
+      });
+      proc.on("close", (code) => {
+        if (code === 0) {
+          console.log("[test-ffmpeg] ✅ FFmpeg works! Version:", stdout.split("\n")[0]);
+          resolve({ success: true, output: stdout });
+        } else {
+          console.error("[test-ffmpeg] ❌ FFmpeg failed with code:", code);
+          console.error("[test-ffmpeg] stderr:", stderr);
+          resolve({ success: false, error: `Exit code ${code}: ${stderr}` });
+        }
+      });
+      setTimeout(() => {
+        proc.kill();
+        resolve({ success: false, error: "Timeout after 5s" });
+      }, 5e3);
+    });
+    return {
+      ...result,
+      path: ffmpegPath,
+      exists: true,
+      mode: stats.mode.toString(8),
+      size: stats.size
+    };
+  } catch (err) {
+    console.error("[test-ffmpeg] Exception:", err);
+    return {
+      success: false,
+      error: err.message,
+      path: ffmpegPath
+    };
+  }
+});
 ipcMain.handle("get-desktop-sources", async (_evt, opts) => {
   const sources = await desktopCapturer.getSources({
     types: opts?.types ?? ["screen", "window"],
@@ -7051,17 +7151,30 @@ ipcMain.handle("ai-summarize", async (_evt, args) => {
         out
       ];
       console.log(`[AI Summarize] Extracting audio ${i + 1}/${parts.length}: ${path$2.basename(p.inputPath)} (${p.tIn.toFixed(2)}s - ${p.tOut.toFixed(2)}s)`);
+      console.log(`[AI Summarize] Using ffmpeg at: ${ffmpegPath}`);
+      console.log(`[AI Summarize] FFmpeg command: ${ffmpegPath} ${ffArgs.join(" ")}`);
       await new Promise((resolve, reject) => {
         const proc = spawn(ffmpegPath, ffArgs, { stdio: ["ignore", "ignore", "pipe"] });
         let stderrData = "";
         proc.stderr?.on("data", (chunk) => stderrData += chunk);
-        proc.on("error", reject);
+        proc.on("error", (err) => {
+          console.error("[AI Summarize] FFmpeg spawn error:", err);
+          console.error("[AI Summarize] This usually means ffmpeg binary is not executable or not found");
+          console.error("[AI Summarize] ffmpegPath:", ffmpegPath);
+          console.error("[AI Summarize] File exists:", fsSync.existsSync(ffmpegPath));
+          if (fsSync.existsSync(ffmpegPath)) {
+            const stats = fsSync.statSync(ffmpegPath);
+            console.error("[AI Summarize] File mode:", stats.mode.toString(8));
+          }
+          reject(err);
+        });
         proc.on("close", (c) => {
           if (c === 0) {
             resolve();
           } else {
             console.error("[AI Summarize] FFmpeg stderr:", stderrData);
-            reject(new Error(`FFmpeg audio extraction failed (exit ${c})`));
+            console.error("[AI Summarize] FFmpeg exit code:", c);
+            reject(new Error(`FFmpeg audio extraction failed (exit ${c}). Check if input video has audio track.`));
           }
         });
       });
@@ -7083,45 +7196,75 @@ ipcMain.handle("ai-summarize", async (_evt, args) => {
       const audioPath = audioPaths[i];
       const fileData = await fs$1.readFile(audioPath);
       let tx;
+      let segments = [];
       try {
         console.log(`[AI Summarize] Transcribing segment ${i + 1}/${audioPaths.length} (${(fileData.length / 1024 / 1024).toFixed(2)} MB)`);
-        const fileStream = fsSync.createReadStream(audioPath);
-        tx = await openai.audio.transcriptions.create({
-          file: fileStream,
-          model: transcribeModel,
-          response_format: "verbose_json"
-        });
-        console.log(`[AI Summarize] Segment ${i + 1} transcription complete.`);
-        console.log(`[AI Summarize] Response type:`, typeof tx);
+        try {
+          const fileStream = fsSync.createReadStream(audioPath);
+          tx = await openai.audio.transcriptions.create({
+            file: fileStream,
+            model: transcribeModel,
+            response_format: "verbose_json",
+            timestamp_granularities: ["segment"]
+          });
+          console.log(`[AI Summarize] Transcription response:`, JSON.stringify(tx).substring(0, 500));
+          const possibleSegments = tx?.segments || tx?.words || tx?.transcription?.segments || null;
+          if (possibleSegments && Array.isArray(possibleSegments) && possibleSegments.length > 0) {
+            console.log(`[AI Summarize] ✅ Found ${possibleSegments.length} segments in verbose response`);
+            segments = possibleSegments.map((s) => ({
+              start: Number(s.start || 0),
+              end: Number(s.end || s.start || 0),
+              text: String(s.text || "").trim()
+            }));
+          }
+        } catch (verboseErr) {
+          console.warn(`[AI Summarize] verbose_json format failed, trying json format:`, verboseErr);
+        }
+        if (segments.length === 0) {
+          console.log(`[AI Summarize] Falling back to regular json format (no timestamps)`);
+          const fileStream2 = fsSync.createReadStream(audioPath);
+          tx = await openai.audio.transcriptions.create({
+            file: fileStream2,
+            model: transcribeModel,
+            response_format: "json"
+          });
+        }
         console.log(`[AI Summarize] Response keys:`, Object.keys(tx || {}));
         console.log(`[AI Summarize] Text length: ${tx?.text?.length || 0}`);
-        console.log(`[AI Summarize] Segments:`, tx?.segments?.length || 0);
-        if (tx?.segments?.[0]) {
-          console.log(`[AI Summarize] First segment sample:`, JSON.stringify(tx.segments[0]).substring(0, 200));
-        }
       } catch (err) {
         console.error(`[AI Summarize] Transcription failed for segment ${i}:`, err.message);
         console.error("[AI Summarize] Full error:", err);
         console.error("[AI Summarize] Error response:", err.response?.data);
-        continue;
+        throw new Error(`Transcription failed: ${err.message}. Check your OpenAI API key and quota.`);
       }
-      const base = segmentMaps[i].baseOffset;
-      const segs = (tx?.segments || []).map((s) => ({
-        start: base + Number(s.start || 0),
-        end: base + Number(s.end || 0),
-        text: String(s.text || "").trim()
-      }));
-      console.log(`[AI Summarize] Extracted ${segs.length} segments from audio ${i + 1}`);
-      if (segs.length === 0 && tx?.text) {
-        console.log(`[AI Summarize] No segments in response, but found text. Creating single segment.`);
-        const segLen = segmentMaps[i].baseOffset;
-        segs.push({
-          start: base,
-          end: base + segLen,
-          text: tx.text.trim()
+      if (segments.length > 0) {
+        const base = segmentMaps[i].baseOffset;
+        const adjustedSegs = segments.map((s) => ({
+          start: base + s.start,
+          end: base + s.end,
+          text: s.text
+        }));
+        console.log(`[AI Summarize] ✅ Extracted ${adjustedSegs.length} timed segments from audio ${i + 1}`);
+        fullSegments.push(...adjustedSegs);
+      } else if (tx?.text) {
+        console.log(`[AI Summarize] ⚠️ No timestamp segments available. Creating artificial segments from text.`);
+        const base = segmentMaps[i].baseOffset;
+        const segLen = parts[i].tOut - parts[i].tIn;
+        const text = tx.text.trim();
+        const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+        const timePerSentence = segLen / sentences.length;
+        sentences.forEach((sentence, idx) => {
+          fullSegments.push({
+            start: base + idx * timePerSentence,
+            end: base + (idx + 1) * timePerSentence,
+            text: sentence.trim()
+          });
         });
+        console.log(`[AI Summarize] ✅ Created ${sentences.length} artificial segments from text`);
+      } else {
+        console.error(`[AI Summarize] ❌ No text or segments returned from transcription`);
+        throw new Error(`Transcription returned empty response. Audio may be silent or API failed.`);
       }
-      fullSegments.push(...segs);
     }
     console.log(`[AI Summarize] Total segments transcribed: ${fullSegments.length}`);
     if (!fullSegments.length) {
@@ -7842,108 +7985,65 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
   if (!parts?.length) throw new Error("No parts");
   const tmpDir = await fs$1.mkdtemp(path$2.join(os$1.tmpdir(), "clipforge_"));
   const outs = [];
+  console.log(`[Export] Re-encoding ${parts.length} segments for proper sync and concatenation...`);
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     const out = path$2.join(tmpDir, `seg_${i}.mp4`);
     const duration = p.tOut - p.tIn;
-    const mustReencode = targetHeight > 0;
-    const fastArgs = [
+    console.log(`[Export] Segment ${i + 1}/${parts.length}: ${duration.toFixed(2)}s from ${path$2.basename(p.inputPath)}`);
+    const ffArgs = [
       "-i",
       p.inputPath,
       "-ss",
       String(p.tIn),
       "-t",
       String(duration),
+      // Timestamp handling
       "-avoid_negative_ts",
       "make_zero",
-      "-c",
-      "copy",
-      "-movflags",
-      "+faststart",
-      "-y",
-      out
-    ];
-    const slowArgs = targetHeight > 0 ? [
-      "-i",
-      p.inputPath,
-      "-ss",
-      String(p.tIn),
-      "-t",
-      String(duration),
-      "-avoid_negative_ts",
-      "make_zero",
+      "-start_at_zero",
       "-fflags",
       "+genpts",
-      "-vf",
-      `scale=-2:${targetHeight}`,
+      // Video encoding
+      ...targetHeight > 0 ? ["-vf", `scale=-2:${targetHeight}`] : [],
       "-c:v",
       "libx264",
       "-preset",
       "veryfast",
       "-crf",
       String(reencodeCRF),
-      "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
-      "-af",
-      "aresample=async=1",
+      "-pix_fmt",
+      "yuv420p",
+      // Ensure compatible pixel format
+      // Force constant frame rate
       "-vsync",
       "cfr",
       "-r",
       "30",
-      "-movflags",
-      "+faststart",
-      "-y",
-      out
-    ] : [
-      "-i",
-      p.inputPath,
-      "-ss",
-      String(p.tIn),
-      "-t",
-      String(duration),
-      "-avoid_negative_ts",
-      "make_zero",
-      "-fflags",
-      "+genpts",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      String(reencodeCRF),
+      // Audio encoding with proper sync
       "-c:a",
       "aac",
       "-b:a",
       "192k",
+      "-ar",
+      "48000",
+      // Standard sample rate
+      "-ac",
+      "2",
+      // Stereo
       "-af",
-      "aresample=async=1",
-      "-vsync",
-      "cfr",
-      "-r",
-      "30",
+      "aresample=async=1:first_pts=0",
+      // Audio sync filter
+      // Output options
       "-movflags",
       "+faststart",
+      "-max_muxing_queue_size",
+      "1024",
       "-y",
       out
     ];
-    if (!mustReencode) {
-      try {
-        await new Promise((resolve, reject) => {
-          const proc = spawn(ffmpegPath, fastArgs, { stdio: ["ignore", "ignore", "pipe"] });
-          proc.on("error", reject);
-          proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`fast mode failed`)));
-        });
-        if (i === 0) console.log(`[Export] Using FAST mode (stream copy) for segments`);
-        outs.push(out);
-        continue;
-      } catch (fastErr) {
-        if (i === 0) console.log(`[Export] Fast mode failed, using re-encode mode for all segments`);
-      }
-    }
     await new Promise((resolve, reject) => {
-      const proc = spawn(ffmpegPath, slowArgs, { stdio: ["ignore", "ignore", "pipe"] });
+      const proc = spawn(ffmpegPath, ffArgs, { stdio: ["ignore", "ignore", "pipe"] });
       let stderrData = "";
       proc.stderr?.on("data", (chunk) => {
         stderrData += chunk.toString();
@@ -7954,8 +8054,19 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
           }
         }
       });
-      proc.on("error", reject);
-      proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`trim exit ${code}`)));
+      proc.on("error", (err) => {
+        console.error(`[Export] FFmpeg error on segment ${i + 1}:`, err);
+        reject(err);
+      });
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          console.error(`[Export] FFmpeg segment ${i + 1} failed with code ${code}`);
+          console.error(`[Export] stderr:`, stderrData.slice(-500));
+          reject(new Error(`Segment encoding failed with exit code ${code}`));
+        }
+      });
     });
     outs.push(out);
   }
@@ -7963,7 +8074,8 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
   const body = outs.map((o) => `file '${o.replace(/'/g, "'\\''")}'`).join("\n");
   await fs$1.writeFile(listPath, body);
   const finalPath = path$2.join(tmpDir, `final_${Date.now()}.mp4`);
-  const fastConcatArgs = [
+  console.log(`[Export] Concatenating ${outs.length} unified segments...`);
+  const concatArgs = [
     "-f",
     "concat",
     "-safe",
@@ -7972,65 +8084,34 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
     listPath,
     "-c",
     "copy",
+    // Fast copy since all segments are already in unified format
     "-movflags",
     "+faststart",
     "-y",
     finalPath
   ];
-  const slowConcatArgs = [
-    "-f",
-    "concat",
-    "-safe",
-    "0",
-    "-i",
-    listPath,
-    "-avoid_negative_ts",
-    "make_zero",
-    "-fflags",
-    "+genpts",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "medium",
-    "-crf",
-    String(reencodeCRF),
-    "-c:a",
-    "aac",
-    "-b:a",
-    "192k",
-    "-af",
-    "aresample=async=1",
-    "-vsync",
-    "cfr",
-    "-r",
-    "30",
-    "-max_muxing_queue_size",
-    "1024",
-    "-movflags",
-    "+faststart",
-    "-y",
-    finalPath
-  ];
-  try {
-    await new Promise((resolve, reject) => {
-      const proc = spawn(ffmpegPath, fastConcatArgs, { stdio: ["ignore", "ignore", "pipe"] });
-      proc.stderr?.on("data", (chunk) => {
-        win?.webContents.send("ffmpeg-progress", `Concatenating (fast): ${chunk.toString().trim()}`);
-      });
-      proc.on("error", reject);
-      proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`fast concat failed`)));
+  await new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath, concatArgs, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderrData = "";
+    proc.stderr?.on("data", (chunk) => {
+      stderrData += chunk.toString();
+      win?.webContents.send("ffmpeg-progress", `Concatenating: ${stderrData.split("\n").slice(-2)[0]}`);
     });
-  } catch (fastErr) {
-    console.log("[Export] Fast concat failed, re-encoding...");
-    await new Promise((resolve, reject) => {
-      const proc = spawn(ffmpegPath, slowConcatArgs, { stdio: ["ignore", "ignore", "pipe"] });
-      proc.stderr?.on("data", (chunk) => {
-        win?.webContents.send("ffmpeg-progress", `Concatenating (re-encode): ${chunk.toString().trim()}`);
-      });
-      proc.on("error", reject);
-      proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`concat exit ${code}`)));
+    proc.on("error", (err) => {
+      console.error("[Export] Concat error:", err);
+      reject(err);
     });
-  }
+    proc.on("close", (code) => {
+      if (code === 0) {
+        console.log("[Export] ✅ Concatenation complete");
+        resolve();
+      } else {
+        console.error("[Export] ❌ Concat failed with code:", code);
+        console.error("[Export] stderr:", stderrData.slice(-500));
+        reject(new Error(`Concatenation failed with exit code ${code}`));
+      }
+    });
+  });
   const bytes = await fs$1.readFile(finalPath);
   outs.forEach((p) => fs$1.unlink(p).catch(() => {
   }));
