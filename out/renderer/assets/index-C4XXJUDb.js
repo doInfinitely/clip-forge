@@ -23622,88 +23622,122 @@ const Stage = React.forwardRef((props, ref) => {
   return React.createElement(FiberProvider, {}, React.createElement(StageWrap, { ...props, forwardedRef: ref }));
 });
 const TL_HEIGHT = 100;
-const CLIP_H = 56;
-const CLIP_Y = (TL_HEIGHT - CLIP_H) / 2;
+const ROW_H = 50;
+const ROW_GAP = 0;
+const CLIP_H = 36;
+const ROW_Y = (row) => row * (ROW_H + ROW_GAP);
+const CLIP_Y = (row) => ROW_Y(row) + Math.round((ROW_H - CLIP_H) / 2);
 const HANDLE_W = 6;
 const MIN_LEN = 0.05;
 const MIN_PX = 24;
 const SNAP_THRESHOLD = 0.1;
 function TimelineCanvas({
-  clips,
-  selectedId,
-  setSelectedId,
+  tracks,
+  activeTrack,
+  selected,
+  setSelected,
   pxPerSec,
   setPxPerSec,
   absTime,
   setAbsTime,
-  onReorder,
-  onTrim
+  onMove,
+  onTrim,
+  onExternalDrop
 }) {
   const stageRef = reactExports.useRef(null);
+  const containerRef = reactExports.useRef(null);
   const [vw, setVw] = reactExports.useState(typeof window !== "undefined" ? window.innerWidth : 800);
   reactExports.useEffect(() => {
     const onR = () => setVw(window.innerWidth);
     window.addEventListener("resize", onR);
     return () => window.removeEventListener("resize", onR);
   }, []);
-  const spans = reactExports.useMemo(() => {
-    const arr = [];
-    let acc = 0;
-    for (const c of clips) {
-      const len = Math.max(MIN_LEN, c.out - c.in);
-      arr.push({ id: c.id, start: acc, len, clip: c });
-      acc += len;
-    }
-    return { blocks: arr, total: acc };
-  }, [clips]);
-  const timeToClipIndex = (t2) => {
-    let acc = 0;
-    for (let i = 0; i < spans.blocks.length; i++) {
-      const b = spans.blocks[i];
-      if (t2 >= acc && t2 <= acc + b.len + 1e-6) return i;
-      acc += b.len;
-    }
-    return Math.max(0, spans.blocks.length - 1);
-  };
-  const snapTime = (time, clipId, which) => {
+  const spansByTrack = reactExports.useMemo(() => {
+    return tracks.map((trackClips) => {
+      const arr = [];
+      for (const c of trackClips) {
+        const len = Math.max(MIN_LEN, c.out - c.in);
+        const start = c.startTime ?? 0;
+        arr.push({ id: c.id, start, len, clip: c });
+      }
+      const total = arr.length > 0 ? Math.max(...arr.map((b) => b.start + b.len)) : 0;
+      return { blocks: arr, total };
+    });
+  }, [tracks]);
+  const maxTotal = Math.max(spansByTrack[0].total, spansByTrack[1].total, 10);
+  const width = Math.max(600, maxTotal * pxPerSec + 80);
+  const contentWidth = Math.max(width, vw);
+  const snapTime = (time, track, clipId, which) => {
     let snapped = time;
     const rounded = Math.round(time);
     if (Math.abs(time - rounded) < SNAP_THRESHOLD) {
       snapped = rounded;
     }
-    const currentClipIndex = spans.blocks.findIndex((b) => b.id === clipId);
+    const trackClips = tracks[track];
+    const currentClipIndex = trackClips.findIndex((c) => c.id === clipId);
     if (currentClipIndex >= 0) {
-      clips[currentClipIndex];
-      if (which === "in") {
-        if (currentClipIndex > 0) {
-          const prevClip = clips[currentClipIndex - 1];
-          if (Math.abs(time - prevClip.out) < SNAP_THRESHOLD) {
-            snapped = prevClip.out;
-          }
+      if (which === "in" && currentClipIndex > 0) {
+        const prevClip = trackClips[currentClipIndex - 1];
+        if (Math.abs(time - prevClip.out) < SNAP_THRESHOLD) {
+          snapped = prevClip.out;
         }
-      } else {
-        if (currentClipIndex < clips.length - 1) {
-          const nextClip = clips[currentClipIndex + 1];
-          if (Math.abs(time - nextClip.in) < SNAP_THRESHOLD) {
-            snapped = nextClip.in;
-          }
+      } else if (which === "out" && currentClipIndex < trackClips.length - 1) {
+        const nextClip = trackClips[currentClipIndex + 1];
+        if (Math.abs(time - nextClip.in) < SNAP_THRESHOLD) {
+          snapped = nextClip.in;
         }
       }
     }
     return snapped;
   };
-  const width = Math.max(600, spans.total * pxPerSec + 80);
-  const contentWidth = Math.max(Math.max(600, spans.total * pxPerSec + 80), vw);
   const onBackgroundMouseDown = (e) => {
     if (e.target !== e.currentTarget) return;
-    const x2 = e.target.getStage().getPointerPosition().x;
+    const stage = e.target.getStage();
+    const pos = stage.getPointerPosition();
+    const x2 = pos.x;
+    const y2 = pos.y;
+    const track = y2 < ROW_H ? 0 : 1;
     const t2 = Math.max(0, (x2 - 40) / pxPerSec);
     setAbsTime(t2);
-    const idx = timeToClipIndex(t2);
-    const targetBlock = spans.blocks[idx];
-    if (targetBlock) setSelectedId(targetBlock.id);
+    const spans = spansByTrack[track];
+    for (const b of spans.blocks) {
+      const clipStart = b.start;
+      const clipEnd = b.start + b.len;
+      if (t2 >= clipStart && t2 <= clipEnd + 1e-6) {
+        setSelected({ track, id: b.id });
+        return;
+      }
+    }
   };
-  return /* @__PURE__ */ jsxRuntimeExports.jsx(
+  const handleDrop = (e) => {
+    if (!onExternalDrop) return;
+    const libId = e.dataTransfer.getData("application/x-clipforge-media-id");
+    if (!libId) return;
+    e.preventDefault();
+    const rect = containerRef.current.getBoundingClientRect();
+    const x2 = e.clientX - rect.left;
+    const y2 = e.clientY - rect.top;
+    const track = y2 < ROW_H ? 0 : 1;
+    const spans = spansByTrack[track];
+    const tSec = Math.max(0, (x2 - 40) / pxPerSec);
+    let idx = 0;
+    for (let i = 0; i < spans.blocks.length; i++) {
+      const clipStart = spans.blocks[i].start;
+      const clipMid = clipStart + spans.blocks[i].len / 2;
+      if (tSec < clipMid) {
+        idx = i;
+        break;
+      }
+      idx = i + 1;
+    }
+    onExternalDrop(track, idx, libId);
+  };
+  const handleDragOver = (e) => {
+    if (e.dataTransfer.types.includes("application/x-clipforge-media-id")) {
+      e.preventDefault();
+    }
+  };
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { ref: containerRef, onDrop: handleDrop, onDragOver: handleDragOver, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
     Stage,
     {
       ref: stageRef,
@@ -23732,160 +23766,173 @@ function TimelineCanvas({
           },
           `g${i}`
         )),
-        spans.blocks.map((b) => {
-          const x2 = 40 + b.start * pxPerSec;
-          const w2 = Math.max(MIN_PX, b.len * pxPerSec);
-          const isSel = b.id === selectedId;
-          const c = b.clip;
-          return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            Group2,
-            {
-              x: x2,
-              y: 0,
-              draggable: false,
-              children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  Rect2,
-                  {
-                    x: 0,
-                    y: CLIP_Y,
-                    width: w2,
-                    height: CLIP_H,
-                    cornerRadius: 8,
-                    fill: c.color,
-                    opacity: isSel ? 0.9 : 0.7,
-                    stroke: isSel ? "#111" : "#bbb",
-                    strokeWidth: isSel ? 2 : 1,
-                    draggable: true,
-                    dragBoundFunc: (pos) => {
-                      return { x: pos.x, y: CLIP_Y };
-                    },
-                    onDragEnd: (e) => {
-                      const deltaX = e.target.x();
-                      e.target.x(0);
-                      const newAbsX = x2 + deltaX;
-                      const centerX = newAbsX + w2 / 2;
-                      const centerTime = Math.max(0, (centerX - 40) / pxPerSec);
-                      let acc = 0;
-                      let newIndex = 0;
-                      for (let i = 0; i < spans.blocks.length; i++) {
-                        const blockMidpoint = acc + spans.blocks[i].len / 2;
-                        if (centerTime < blockMidpoint) {
-                          newIndex = i;
-                          break;
-                        }
-                        acc += spans.blocks[i].len;
-                        newIndex = i + 1;
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          Line2,
+          {
+            points: [0, ROW_H, contentWidth, ROW_H],
+            stroke: "#ccc",
+            strokeWidth: 1,
+            listening: false
+          }
+        ),
+        [0, 1].map((trackIdx) => {
+          const t2 = trackIdx;
+          const spans = spansByTrack[t2];
+          const clipY = CLIP_Y(t2);
+          return spans.blocks.map((b) => {
+            const x2 = 40 + b.start * pxPerSec;
+            const actualW = b.len * pxPerSec;
+            const w2 = Math.max(MIN_PX, actualW);
+            const isSel = selected?.track === t2 && selected.id === b.id;
+            const c = b.clip;
+            return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              Group2,
+              {
+                x: x2,
+                y: 0,
+                draggable: false,
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    Rect2,
+                    {
+                      x: 0,
+                      y: clipY,
+                      width: w2,
+                      height: CLIP_H,
+                      cornerRadius: 8,
+                      fill: c.color,
+                      opacity: isSel ? 0.9 : 0.7,
+                      stroke: isSel ? "#111" : "#bbb",
+                      strokeWidth: isSel ? 2 : 1,
+                      draggable: true,
+                      dragBoundFunc: (pos) => {
+                        return { x: pos.x, y: clipY };
+                      },
+                      onDragEnd: (e) => {
+                        const deltaX = e.target.x();
+                        e.target.x(0);
+                        const newX = x2 + deltaX;
+                        const newStartTime = Math.max(0, (newX - 40) / pxPerSec);
+                        onMove(t2, b.id, newStartTime);
+                      },
+                      onMouseDown: (e) => {
+                        const clickX = e.target.getStage().getPointerPosition().x;
+                        const time = Math.max(0, (clickX - 40) / pxPerSec);
+                        setAbsTime(time);
+                        setSelected({ track: t2, id: c.id });
                       }
-                      newIndex = Math.min(newIndex, spans.blocks.length - 1);
-                      onReorder(b.id, newIndex);
-                    },
-                    onMouseDown: (e) => {
-                      const clickX = e.target.getStage().getPointerPosition().x;
-                      const t2 = Math.max(0, (clickX - 40) / pxPerSec);
-                      setAbsTime(t2);
-                      setSelectedId(c.id);
                     }
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  Text2,
-                  {
-                    x: 10,
-                    y: CLIP_Y + 18,
-                    text: c.name,
-                    fontSize: 12,
-                    fill: "#111",
-                    listening: false
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  Rect2,
-                  {
-                    x: 0,
-                    y: CLIP_Y,
-                    width: HANDLE_W,
-                    height: CLIP_H,
-                    fill: "#333",
-                    opacity: 0.6,
-                    onMouseDown: (e) => {
-                      e.cancelBubble = true;
-                      e.evt.stopPropagation();
-                      e.evt.preventDefault();
-                      setSelectedId(c.id);
-                      const stage = e.target.getStage();
-                      const startX = stage.getPointerPosition().x;
-                      const startIn = c.in;
-                      const onMove = () => {
-                        const currentX = stage.getPointerPosition()?.x ?? startX;
-                        const deltaX = currentX - startX;
-                        const deltaSec = deltaX / pxPerSec;
-                        let nextIn = startIn + deltaSec;
-                        nextIn = Math.max(0, Math.min(nextIn, c.out - MIN_LEN));
-                        nextIn = snapTime(nextIn, c.id, "in");
-                        onTrim(c.id, "in", nextIn);
-                      };
-                      const onUp = () => {
-                        stage.off("mousemove", onMove);
-                        stage.off("mouseup", onUp);
-                        stage.off("mouseleave", onUp);
-                      };
-                      stage.on("mousemove", onMove);
-                      stage.on("mouseup", onUp);
-                      stage.on("mouseleave", onUp);
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    Text2,
+                    {
+                      x: 8,
+                      y: clipY + 6,
+                      text: c.name,
+                      fontSize: 10,
+                      fill: "#111",
+                      listening: false
                     }
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  Rect2,
-                  {
-                    x: w2 - HANDLE_W,
-                    y: CLIP_Y,
-                    width: HANDLE_W,
-                    height: CLIP_H,
-                    fill: "#333",
-                    opacity: 0.6,
-                    onMouseDown: (e) => {
-                      e.cancelBubble = true;
-                      e.evt.stopPropagation();
-                      e.evt.preventDefault();
-                      setSelectedId(c.id);
-                      const stage = e.target.getStage();
-                      const startX = stage.getPointerPosition().x;
-                      const startOut = c.out;
-                      const onMove = () => {
-                        const currentX = stage.getPointerPosition()?.x ?? startX;
-                        const deltaX = currentX - startX;
-                        const deltaSec = deltaX / pxPerSec;
-                        let nextOut = startOut + deltaSec;
-                        nextOut = Math.max(c.in + MIN_LEN, Math.min(nextOut, c.duration));
-                        nextOut = snapTime(nextOut, c.id, "out");
-                        onTrim(c.id, "out", nextOut);
-                      };
-                      const onUp = () => {
-                        stage.off("mousemove", onMove);
-                        stage.off("mouseup", onUp);
-                        stage.off("mouseleave", onUp);
-                      };
-                      stage.on("mousemove", onMove);
-                      stage.on("mouseup", onUp);
-                      stage.on("mouseleave", onUp);
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    Text2,
+                    {
+                      x: 8,
+                      y: clipY + 20,
+                      text: `${c.duration.toFixed(2)}s` + (c.width && c.height ? ` • ${c.width}×${c.height}` : ""),
+                      fontSize: 8,
+                      fill: "#333",
+                      listening: false
                     }
-                  }
-                )
-              ]
-            },
-            b.id
-          );
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    Rect2,
+                    {
+                      x: 0,
+                      y: clipY,
+                      width: HANDLE_W,
+                      height: CLIP_H,
+                      fill: "#333",
+                      opacity: 0.6,
+                      onMouseDown: (e) => {
+                        e.cancelBubble = true;
+                        e.evt.stopPropagation();
+                        e.evt.preventDefault();
+                        setSelected({ track: t2, id: c.id });
+                        const stage = e.target.getStage();
+                        const startX = stage.getPointerPosition().x;
+                        const startIn = c.in;
+                        const onMove2 = () => {
+                          const currentX = stage.getPointerPosition()?.x ?? startX;
+                          const deltaX = currentX - startX;
+                          const deltaSec = deltaX / pxPerSec;
+                          let nextIn = startIn + deltaSec;
+                          nextIn = Math.max(0, Math.min(nextIn, c.out - MIN_LEN));
+                          nextIn = snapTime(nextIn, t2, c.id, "in");
+                          onTrim(t2, c.id, "in", nextIn);
+                        };
+                        const onUp = () => {
+                          stage.off("mousemove", onMove2);
+                          stage.off("mouseup", onUp);
+                          stage.off("mouseleave", onUp);
+                        };
+                        stage.on("mousemove", onMove2);
+                        stage.on("mouseup", onUp);
+                        stage.on("mouseleave", onUp);
+                      }
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    Rect2,
+                    {
+                      x: w2 - HANDLE_W,
+                      y: clipY,
+                      width: HANDLE_W,
+                      height: CLIP_H,
+                      fill: "#333",
+                      opacity: 0.6,
+                      onMouseDown: (e) => {
+                        e.cancelBubble = true;
+                        e.evt.stopPropagation();
+                        e.evt.preventDefault();
+                        setSelected({ track: t2, id: c.id });
+                        const stage = e.target.getStage();
+                        const startX = stage.getPointerPosition().x;
+                        const startOut = c.out;
+                        const onMove2 = () => {
+                          const currentX = stage.getPointerPosition()?.x ?? startX;
+                          const deltaX = currentX - startX;
+                          const deltaSec = deltaX / pxPerSec;
+                          let nextOut = startOut + deltaSec;
+                          nextOut = Math.max(c.in + MIN_LEN, Math.min(nextOut, c.duration));
+                          nextOut = snapTime(nextOut, t2, c.id, "out");
+                          onTrim(t2, c.id, "out", nextOut);
+                        };
+                        const onUp = () => {
+                          stage.off("mousemove", onMove2);
+                          stage.off("mouseup", onUp);
+                          stage.off("mouseleave", onUp);
+                        };
+                        stage.on("mousemove", onMove2);
+                        stage.on("mouseup", onUp);
+                        stage.on("mouseleave", onUp);
+                      }
+                    }
+                  )
+                ]
+              },
+              `${t2}-${b.id}`
+            );
+          });
         }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           Line2,
           {
             points: [
               40 + absTime * pxPerSec,
-              0,
+              ROW_Y(activeTrack),
               40 + absTime * pxPerSec,
-              TL_HEIGHT
+              ROW_Y(activeTrack) + ROW_H
             ],
             stroke: "#e11d48",
             strokeWidth: 2
@@ -23893,7 +23940,915 @@ function TimelineCanvas({
         )
       ] })
     }
-  );
+  ) });
+}
+function ScreenCapture({ onRecordingComplete, videoRef: externalVideoRef, setIsRecording }) {
+  const [sources, setSources] = reactExports.useState([]);
+  const [chosen, setChosen] = reactExports.useState(null);
+  const [includeMic, setIncludeMic] = reactExports.useState(true);
+  const [recording, setRecording] = reactExports.useState(false);
+  const [status, setStatus] = reactExports.useState("");
+  const [recordingDuration, setRecordingDuration] = reactExports.useState(0);
+  const previewRef = reactExports.useRef(null);
+  const mediaStreamRef = reactExports.useRef(null);
+  const recorderRef = reactExports.useRef(null);
+  const chunksRef = reactExports.useRef([]);
+  const timerRef = reactExports.useRef(null);
+  const startTimeRef = reactExports.useRef(0);
+  reactExports.useEffect(() => {
+    if (window.clipforge?.getDesktopSources) {
+      window.clipforge.getDesktopSources({ types: ["screen", "window"] }).then((allSources) => {
+        const sorted = allSources.sort((a, b) => {
+          const aIsScreen = a.name.toLowerCase().includes("screen") || a.name.toLowerCase().includes("entire");
+          const bIsScreen = b.name.toLowerCase().includes("screen") || b.name.toLowerCase().includes("entire");
+          if (aIsScreen && !bIsScreen) return -1;
+          if (!aIsScreen && bIsScreen) return 1;
+          return 0;
+        });
+        setSources(sorted);
+      }).catch(console.error);
+    }
+  }, []);
+  async function start() {
+    if (!chosen) {
+      setStatus("Pick a source");
+      return;
+    }
+    try {
+      setStatus("Requesting capture…");
+      const desk = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        // system audio on macOS is limited; keep false for reliability
+        video: {
+          mandatory: {
+            chromeMediaSource: "desktop",
+            chromeMediaSourceId: chosen.id,
+            maxFrameRate: 30,
+            minWidth: 1280,
+            maxWidth: 1920,
+            minHeight: 720,
+            maxHeight: 1080
+          }
+        }
+      });
+      let mic = null;
+      if (includeMic) {
+        try {
+          mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch {
+        }
+      }
+      const combined = new MediaStream([
+        ...desk.getVideoTracks(),
+        ...mic ? mic.getAudioTracks() : []
+      ]);
+      mediaStreamRef.current = combined;
+      const preview = externalVideoRef?.current || previewRef.current;
+      console.log("[ScreenCapture] Setting up preview, video element:", preview);
+      if (preview) {
+        preview.removeAttribute("src");
+        preview.load();
+        preview.srcObject = combined;
+        preview.muted = true;
+        preview.autoplay = true;
+        console.log("[ScreenCapture] Set srcObject, tracks:", combined.getTracks().map((t2) => ({ kind: t2.kind, enabled: t2.enabled })));
+        setTimeout(() => {
+          console.log("[ScreenCapture] Attempting to play preview");
+          preview.play().catch((err) => console.error("Preview play failed:", err));
+        }, 100);
+      } else {
+        console.error("[ScreenCapture] No video element available for preview!");
+      }
+      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm;codecs=vp8";
+      const rec = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: 6e6 });
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data?.size) chunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: mime });
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const res = await window.clipforge.saveBytes(`recording-${Date.now()}.webm`, bytes);
+        if (res.saved && res.path) {
+          setStatus("Saved ✅ Adding to timeline…");
+          onRecordingComplete?.(res.path);
+          setTimeout(() => setStatus(""), 2e3);
+        } else {
+          setStatus("Canceled");
+        }
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+      setIsRecording?.(true);
+      setStatus("");
+      startTimeRef.current = Date.now();
+      setRecordingDuration(0);
+      timerRef.current = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1e3);
+        setRecordingDuration(elapsed);
+      }, 1e3);
+    } catch (err) {
+      console.error(err);
+      setStatus(err?.message || "Failed to start recording — macOS may need Screen Recording permission (System Settings → Privacy & Security).");
+    }
+  }
+  function stop() {
+    recorderRef.current?.stop();
+    mediaStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    const preview = externalVideoRef?.current || previewRef.current;
+    if (preview) {
+      preview.srcObject = null;
+      preview.pause();
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    recorderRef.current = null;
+    mediaStreamRef.current = null;
+    setRecording(false);
+    setIsRecording?.(false);
+    setStatus("Finalizing…");
+  }
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: "10px", display: "flex", flexDirection: "column", gap: 10 }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, children: chosen && !recording && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setChosen(null), style: { fontSize: 11, padding: "2px 8px" }, children: "Change Source" }) }),
+    !recording && !chosen && sources.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+      border: "1px solid #eee",
+      borderRadius: 8,
+      background: "#fafafa",
+      height: "160px",
+      overflowY: "scroll",
+      overflowX: "hidden",
+      padding: "10px"
+    }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fill, 180px)",
+      gap: 10
+    }, children: sources.map((s) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "button",
+      {
+        onClick: () => setChosen(s),
+        title: s.name,
+        style: {
+          border: "1px solid #ddd",
+          borderRadius: 6,
+          padding: 8,
+          textAlign: "left",
+          background: "#fff",
+          cursor: "pointer",
+          display: "flex",
+          flexDirection: "column"
+        },
+        children: [
+          s.thumbnail ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "img",
+            {
+              src: s.thumbnail,
+              alt: s.name,
+              style: {
+                width: "100%",
+                height: 100,
+                objectFit: "cover",
+                borderRadius: 4,
+                display: "block",
+                marginBottom: 6
+              }
+            }
+          ) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+            width: "100%",
+            height: 100,
+            background: "#333",
+            borderRadius: 4,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: 6,
+            color: "#888",
+            fontSize: 10
+          }, children: "No Preview" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+            fontSize: 11,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            lineHeight: "14px",
+            maxHeight: "28px",
+            wordBreak: "break-word"
+          }, children: s.name })
+        ]
+      },
+      s.id
+    )) }) }),
+    chosen && !recording && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
+      padding: 8,
+      background: "#f0f9ff",
+      border: "2px solid #2563eb",
+      borderRadius: 6,
+      fontSize: 13
+    }, children: [
+      "📹 Selected: ",
+      /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: chosen.name })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { style: { fontSize: 13, display: "flex", alignItems: "center", gap: 6 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: includeMic, onChange: (e) => setIncludeMic(e.target.checked) }),
+        "Include microphone"
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, alignItems: "center" }, children: [
+        !recording ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: start, disabled: !chosen, style: { padding: "6px 12px" }, children: "⏺ Start Recording" }) : /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: stop, style: { padding: "6px 12px" }, children: "⏹ Stop & Save" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, color: "#555" }, children: status })
+      ] })
+    ] }),
+    recording && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, padding: 8, background: "#fee", borderRadius: 6 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, fontWeight: "bold", color: "#dc2626" }, children: "🔴 Recording in progress..." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+        fontSize: 16,
+        fontWeight: "bold",
+        color: "#dc2626",
+        fontFamily: "monospace"
+      }, children: formatDuration(recordingDuration) })
+    ] }),
+    !externalVideoRef && recording && /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "video",
+      {
+        ref: previewRef,
+        autoPlay: true,
+        playsInline: true,
+        muted: true,
+        style: {
+          width: "100%",
+          height: "auto",
+          maxHeight: "400px",
+          background: "#000",
+          borderRadius: 8,
+          border: "2px solid #dc2626",
+          display: "block",
+          objectFit: "contain",
+          marginTop: 10
+        }
+      }
+    )
+  ] });
+}
+function WebcamCapture({ onRecordingComplete, videoRef: externalVideoRef, setIsRecording }) {
+  const [cams, setCams] = reactExports.useState([]);
+  const [camId, setCamId] = reactExports.useState(null);
+  const [includeMic, setIncludeMic] = reactExports.useState(true);
+  const [recording, setRecording] = reactExports.useState(false);
+  const [status, setStatus] = reactExports.useState("");
+  const [recordingDuration, setRecordingDuration] = reactExports.useState(0);
+  const videoRef = reactExports.useRef(null);
+  const recRef = reactExports.useRef(null);
+  const chunksRef = reactExports.useRef([]);
+  const streamRef = reactExports.useRef(null);
+  const timerRef = reactExports.useRef(null);
+  const startTimeRef = reactExports.useRef(0);
+  reactExports.useEffect(() => {
+    (async () => {
+      console.log("[WebcamCapture] Enumerating devices...");
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameras = devices.filter((d) => d.kind === "videoinput");
+      console.log("[WebcamCapture] Found cameras:", cameras.length, cameras);
+      setCams(cameras);
+      if (cameras.length && !camId) setCamId(cameras[0].deviceId);
+    })().catch((err) => {
+      console.error("[WebcamCapture] Error enumerating devices:", err);
+    });
+  }, []);
+  async function start() {
+    try {
+      setStatus("Starting webcam…");
+      const video = await navigator.mediaDevices.getUserMedia({
+        video: camId ? { deviceId: { exact: camId } } : true,
+        audio: false
+      });
+      let mic = null;
+      if (includeMic) {
+        try {
+          mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch {
+        }
+      }
+      const mixed = new MediaStream([
+        ...video.getVideoTracks(),
+        ...mic ? mic.getAudioTracks() : []
+      ]);
+      streamRef.current = mixed;
+      const preview = externalVideoRef?.current || videoRef.current;
+      if (preview) {
+        preview.removeAttribute("src");
+        preview.load();
+        preview.srcObject = mixed;
+        preview.muted = true;
+        preview.autoplay = true;
+        setTimeout(() => {
+          preview.play().catch((err) => console.error("Webcam preview play failed:", err));
+        }, 100);
+      }
+      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm;codecs=vp8";
+      const rec = new MediaRecorder(mixed, { mimeType: mime, videoBitsPerSecond: 6e6 });
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data?.size) chunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: mime });
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const res = await window.clipforge.saveBytes(`webcam-${Date.now()}.webm`, bytes);
+        if (res.saved && res.path) onRecordingComplete?.(res.path);
+        setStatus(res.saved ? "Saved ✅" : "Canceled");
+        setTimeout(() => setStatus(""), 1500);
+      };
+      rec.start();
+      recRef.current = rec;
+      setRecording(true);
+      setIsRecording?.(true);
+      setStatus("");
+      startTimeRef.current = Date.now();
+      setRecordingDuration(0);
+      timerRef.current = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1e3);
+        setRecordingDuration(elapsed);
+      }, 1e3);
+    } catch (e) {
+      console.error(e);
+      setStatus(e?.message || "Failed to start webcam");
+    }
+  }
+  function stop() {
+    recRef.current?.stop();
+    streamRef.current?.getTracks().forEach((t2) => t2.stop());
+    const preview = externalVideoRef?.current || videoRef.current;
+    if (preview) {
+      preview.srcObject = null;
+      preview.pause();
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    recRef.current = null;
+    streamRef.current = null;
+    setRecording(false);
+    setIsRecording?.(false);
+    setStatus("Finalizing…");
+  }
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 10, display: "grid", gap: 8 }, children: [
+    cams.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, color: "#666", padding: "8px", background: "#fff3cd", borderRadius: 4 }, children: "Loading cameras... (You may need to grant camera permission)" }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { style: { fontSize: 13 }, children: "Camera:" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { value: camId ?? "", onChange: (e) => setCamId(e.target.value), style: { fontSize: 13, padding: "4px 8px" }, children: [
+          cams.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "No cameras found" }),
+          cams.map((c) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: c.deviceId, children: c.label || `Camera ${c.deviceId.slice(0, 8)}` }, c.deviceId))
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { style: { fontSize: 13 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: includeMic, onChange: (e) => setIncludeMic(e.target.checked) }),
+          " Mic"
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, alignItems: "center" }, children: [
+        !recording ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: start, disabled: !camId, style: { padding: "6px 12px", fontSize: 13 }, children: "⏺ Start Recording" }) : /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: stop, style: { padding: "6px 12px", fontSize: 13 }, children: "⏹ Stop & Save" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, color: "#555", fontWeight: "bold" }, children: status })
+      ] })
+    ] }),
+    recording && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, padding: 8, background: "#fee", borderRadius: 6 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, fontWeight: "bold", color: "#dc2626" }, children: "🔴 Recording in progress..." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+        fontSize: 16,
+        fontWeight: "bold",
+        color: "#dc2626",
+        fontFamily: "monospace"
+      }, children: formatDuration(recordingDuration) })
+    ] }),
+    !externalVideoRef && recording && /* @__PURE__ */ jsxRuntimeExports.jsx("video", { ref: videoRef, autoPlay: true, muted: true, playsInline: true, style: { width: "100%", maxHeight: 180, background: "#000", borderRadius: 8, border: "2px solid #2563eb" } }),
+    !externalVideoRef && !recording && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: "100%", height: 180, background: "#1a1a1a", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }, children: 'Click "Start Webcam" to begin recording' })
+  ] });
+}
+function PiPRecorder({ onRecordingComplete, videoRef: externalVideoRef, setIsRecording }) {
+  const [sources, setSources] = reactExports.useState([]);
+  const [chosen, setChosen] = reactExports.useState(null);
+  const [cams, setCams] = reactExports.useState([]);
+  const [camId, setCamId] = reactExports.useState(null);
+  const [includeMic, setIncludeMic] = reactExports.useState(true);
+  const [pipCorner, setPipCorner] = reactExports.useState("bottom-right");
+  const [pipScale, setPipScale] = reactExports.useState(0.25);
+  const [status, setStatus] = reactExports.useState("");
+  const [recording, setRecording] = reactExports.useState(false);
+  const [recordingDuration, setRecordingDuration] = reactExports.useState(0);
+  const screenVidRef = reactExports.useRef(null);
+  const camVidRef = reactExports.useRef(null);
+  const canvasRef = reactExports.useRef(null);
+  const screenStreamRef = reactExports.useRef(null);
+  const camStreamRef = reactExports.useRef(null);
+  const micStreamRef = reactExports.useRef(null);
+  const canvasStreamRef = reactExports.useRef(null);
+  const rafRef = reactExports.useRef(null);
+  const recRef = reactExports.useRef(null);
+  const chunksRef = reactExports.useRef([]);
+  const timerRef = reactExports.useRef(null);
+  const startTimeRef = reactExports.useRef(0);
+  reactExports.useEffect(() => {
+    console.log("[PiPRecorder] Loading sources...");
+    if (window.clipforge?.getDesktopSources) {
+      window.clipforge.getDesktopSources({ types: ["screen", "window"] }).then((list) => {
+        console.log("[PiPRecorder] Got desktop sources:", list.length, list);
+        const sorted = list.sort((a, b) => {
+          const aS = /screen|entire/i.test(a.name);
+          const bS = /screen|entire/i.test(b.name);
+          return aS === bS ? 0 : aS ? -1 : 1;
+        });
+        setSources(sorted);
+      }).catch((err) => {
+        console.error("[PiPRecorder] Error getting desktop sources:", err);
+      });
+    } else {
+      console.error("[PiPRecorder] window.clipforge.getDesktopSources not available");
+    }
+    navigator.mediaDevices.enumerateDevices().then((devs) => {
+      const cameras = devs.filter((d) => d.kind === "videoinput");
+      console.log("[PiPRecorder] Found cameras:", cameras.length, cameras);
+      setCams(cameras);
+      if (cameras.length) setCamId(cameras[0].deviceId);
+    }).catch((err) => {
+      console.error("[PiPRecorder] Error enumerating devices:", err);
+    });
+  }, []);
+  function layoutPip(ctx, W2, H2, pipW, pipH) {
+    const pad = Math.round(Math.min(W2, H2) * 0.02);
+    let x2 = pad, y2 = pad;
+    if (pipCorner.includes("right")) x2 = W2 - pipW - pad;
+    if (pipCorner.includes("bottom")) y2 = H2 - pipH - pad;
+    return { x: x2, y: y2 };
+  }
+  function stopAll() {
+    screenStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    camStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    micStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    canvasStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    if (externalVideoRef?.current) {
+      externalVideoRef.current.srcObject = null;
+      externalVideoRef.current.pause();
+    }
+    screenStreamRef.current = camStreamRef.current = micStreamRef.current = canvasStreamRef.current = null;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    recRef.current = null;
+  }
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+  async function start() {
+    console.log("[PiPRecorder] start called, chosen:", chosen?.name, "camId:", camId);
+    if (!chosen) {
+      setStatus("Pick a screen/window");
+      return;
+    }
+    if (!camId) {
+      setStatus("No camera");
+      return;
+    }
+    try {
+      setStatus("Setting up sources…");
+      console.log("[PiPRecorder] Requesting screen capture...");
+      const screen = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            chromeMediaSource: "desktop",
+            chromeMediaSourceId: chosen.id,
+            maxFrameRate: 30,
+            minWidth: 1280,
+            maxWidth: 2560,
+            minHeight: 720,
+            maxHeight: 1440
+          }
+        }
+      });
+      screenStreamRef.current = screen;
+      if (screenVidRef.current) {
+        screenVidRef.current.srcObject = screen;
+        screenVidRef.current.muted = true;
+        await screenVidRef.current.play().catch(() => {
+        });
+      }
+      const cam = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: camId } },
+        audio: false
+      });
+      camStreamRef.current = cam;
+      if (camVidRef.current) {
+        camVidRef.current.srcObject = cam;
+        camVidRef.current.muted = true;
+        await camVidRef.current.play().catch(() => {
+        });
+      }
+      let mic = null;
+      if (includeMic) {
+        try {
+          mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch {
+        }
+      }
+      micStreamRef.current = mic;
+      const canvas = canvasRef.current;
+      const sTrack = screen.getVideoTracks()[0];
+      const settings = sTrack.getSettings();
+      const baseW = Math.max(1280, settings.width || 1280);
+      const baseH = Math.max(720, settings.height || 720);
+      canvas.width = baseW;
+      canvas.height = baseH;
+      const ctx = canvas.getContext("2d");
+      const draw = () => {
+        const sv = screenVidRef.current;
+        const cv = camVidRef.current;
+        const W2 = canvas.width, H2 = canvas.height;
+        ctx.clearRect(0, 0, W2, H2);
+        ctx.drawImage(sv, 0, 0, W2, H2);
+        const targetH = Math.round(H2 * pipScale);
+        const aspect = cv.videoWidth > 0 ? cv.videoWidth / cv.videoHeight : 16 / 9;
+        const pipW = Math.round(targetH * aspect);
+        const pipH = targetH;
+        const { x: x2, y: y2 } = layoutPip(ctx, W2, H2, pipW, pipH);
+        const r2 = Math.max(8, Math.round(pipW * 0.04));
+        ctx.save();
+        ctx.shadowColor = "rgba(0,0,0,0.35)";
+        ctx.shadowBlur = 12;
+        ctx.shadowOffsetY = 2;
+        ctx.beginPath();
+        const rr = (x22, y22, w2, h, rad) => {
+          const r22 = Math.min(rad, w2 / 2, h / 2);
+          ctx.moveTo(x22 + r22, y22);
+          ctx.arcTo(x22 + w2, y22, x22 + w2, y22 + h, r22);
+          ctx.arcTo(x22 + w2, y22 + h, x22, y22 + h, r22);
+          ctx.arcTo(x22, y22 + h, x22, y22, r22);
+          ctx.arcTo(x22, y22, x22 + w2, y22, r22);
+          ctx.closePath();
+        };
+        rr(x2, y2, pipW, pipH, r2);
+        ctx.clip();
+        ctx.drawImage(cv, x2, y2, pipW, pipH);
+        ctx.restore();
+        rafRef.current = requestAnimationFrame(draw);
+      };
+      rafRef.current = requestAnimationFrame(draw);
+      const canvasStream = canvas.captureStream(30);
+      if (mic?.getAudioTracks().length) {
+        canvasStream.addTrack(mic.getAudioTracks()[0]);
+      }
+      canvasStreamRef.current = canvasStream;
+      if (externalVideoRef?.current) {
+        const preview = externalVideoRef.current;
+        preview.removeAttribute("src");
+        preview.load();
+        preview.srcObject = canvasStream;
+        preview.muted = true;
+        preview.autoplay = true;
+        setTimeout(() => {
+          preview.play().catch((err) => console.error("PiP preview play failed:", err));
+        }, 100);
+      }
+      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm;codecs=vp8";
+      const rec = new MediaRecorder(canvasStream, { mimeType: mime, videoBitsPerSecond: 8e6 });
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data?.size) chunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: mime });
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const res = await window.clipforge.saveBytes(`pip-${Date.now()}.webm`, bytes);
+        if (res.saved && res.path) onRecordingComplete?.(res.path);
+        setStatus(res.saved ? "Saved ✅" : "Canceled");
+        setTimeout(() => setStatus(""), 1500);
+        stopAll();
+      };
+      rec.start();
+      recRef.current = rec;
+      setRecording(true);
+      setIsRecording?.(true);
+      setStatus("");
+      startTimeRef.current = Date.now();
+      setRecordingDuration(0);
+      timerRef.current = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1e3);
+        setRecordingDuration(elapsed);
+      }, 1e3);
+    } catch (e) {
+      console.error(e);
+      setStatus(e?.message || "Failed to start PiP — check Screen Recording permission on macOS.");
+      stopAll();
+    }
+  }
+  function stop() {
+    recRef.current?.stop();
+    screenStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    camStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    micStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    canvasStreamRef.current?.getTracks().forEach((t2) => t2.stop());
+    if (externalVideoRef?.current) {
+      externalVideoRef.current.srcObject = null;
+      externalVideoRef.current.pause();
+    }
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setRecording(false);
+    setIsRecording?.(false);
+    setStatus("Finalizing…");
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 10, display: "grid", gap: 10 }, children: [
+    chosen && camId && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 8, background: "#f0f9ff", border: "2px solid #2563eb", borderRadius: 6, fontSize: 12 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "Screen:" }),
+        " ",
+        chosen.name
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginTop: 4 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "Camera:" }),
+        " ",
+        cams.find((c) => c.deviceId === camId)?.label || "Camera",
+        " |",
+        /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: " Corner:" }),
+        " ",
+        pipCorner,
+        " |",
+        /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: " Size:" }),
+        " ",
+        Math.round(pipScale * 100),
+        "%",
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => {
+          setChosen(null);
+          setCamId(null);
+        }, style: { marginLeft: 8, fontSize: 11, padding: "2px 6px" }, children: "Change" })
+      ] })
+    ] }),
+    (!chosen || !camId) && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { border: "1px solid #eee", borderRadius: 8, padding: 8, background: "#fafafa", maxHeight: 120, overflowY: "auto" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, marginBottom: 6 }, children: "Pick Screen/Window" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, 140px)", gap: 6 }, children: sources.map((s) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "button",
+          {
+            onClick: () => setChosen(s),
+            style: {
+              border: s.id === chosen?.id ? "2px solid #2563eb" : "1px solid #ddd",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+              padding: 4,
+              textAlign: "left"
+            },
+            children: [
+              s.thumbnail && s.thumbnail !== "null" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "img",
+                {
+                  src: s.thumbnail,
+                  alt: s.name,
+                  style: { width: "100%", height: 60, objectFit: "cover", borderRadius: 4, display: "block" },
+                  onError: (e) => {
+                    console.error("[PiPRecorder] Image load error for", s.name);
+                    e.currentTarget.style.display = "none";
+                  }
+                }
+              ) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: "100%", height: 60, background: "#333", borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", color: "#888", fontSize: 9 }, children: "No Preview" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 10, marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "#111" }, children: s.name })
+            ]
+          },
+          s.id
+        )) })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { border: "1px solid #eee", borderRadius: 8, padding: 8, background: "#fafafa", display: "flex", flexDirection: "column", gap: 6 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 6 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6, alignItems: "center" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("label", { style: { fontSize: 11 }, children: "Camera:" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: camId ?? "", onChange: (e) => setCamId(e.target.value), style: { fontSize: 11, flex: 1 }, children: cams.map((c) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: c.deviceId, children: c.label || "Camera" }, c.deviceId)) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { style: { fontSize: 11, display: "flex", alignItems: "center", gap: 4 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: includeMic, onChange: (e) => setIncludeMic(e.target.checked) }),
+          " Mic"
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 6 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6, alignItems: "center" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("label", { style: { fontSize: 11, minWidth: 60 }, children: "Corner:" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { value: pipCorner, onChange: (e) => setPipCorner(e.target.value), style: { fontSize: 11, flex: 1 }, children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "top-left", children: "Top-left" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "top-right", children: "Top-right" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "bottom-left", children: "Bottom-left" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "bottom-right", children: "Bottom-right" })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6, alignItems: "center" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("label", { style: { fontSize: 11, minWidth: 60 }, children: "Size:" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "input",
+              {
+                type: "range",
+                min: "0.15",
+                max: "0.5",
+                step: "0.05",
+                value: pipScale,
+                onChange: (e) => setPipScale(parseFloat(e.target.value)),
+                style: { flex: 1 }
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { fontSize: 11, minWidth: 35 }, children: [
+              Math.round(pipScale * 100),
+              "%"
+            ] })
+          ] })
+        ] })
+      ] }) })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, alignItems: "center" }, children: [
+      !recording ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: start, disabled: !chosen || !camId, style: { padding: "6px 12px", fontSize: 13 }, children: "⏺ Start Recording" }) : /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: stop, style: { padding: "6px 12px", fontSize: 13 }, children: "⏹ Stop & Save" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, color: "#555", fontWeight: "bold" }, children: status })
+    ] }),
+    recording && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, padding: 8, background: "#fee", borderRadius: 6 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, fontWeight: "bold", color: "#dc2626" }, children: "🔴 Recording in progress..." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+        fontSize: 16,
+        fontWeight: "bold",
+        color: "#dc2626",
+        fontFamily: "monospace"
+      }, children: formatDuration(recordingDuration) })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "none" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("video", { ref: screenVidRef, muted: true, playsInline: true }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("video", { ref: camVidRef, muted: true, playsInline: true })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "canvas",
+      {
+        ref: canvasRef,
+        style: { display: "none" }
+      }
+    )
+  ] });
+}
+function RecordingPanel({ onRecordingComplete, videoRef, setIsRecording }) {
+  const [mode, setMode] = reactExports.useState("screen");
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { borderTop: "2px solid #333", background: "#f9f9f9" }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
+      display: "flex",
+      gap: 0,
+      borderBottom: "1px solid #ddd",
+      background: "#fff"
+    }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          onClick: () => setMode("screen"),
+          style: {
+            flex: 1,
+            padding: "12px 16px",
+            border: "none",
+            background: mode === "screen" ? "#2563eb" : "#fff",
+            color: mode === "screen" ? "#fff" : "#333",
+            fontWeight: mode === "screen" ? "bold" : "normal",
+            cursor: "pointer",
+            fontSize: 14,
+            borderRight: "1px solid #ddd",
+            transition: "all 0.2s"
+          },
+          children: "🖥️ Screen Only"
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          onClick: () => setMode("webcam"),
+          style: {
+            flex: 1,
+            padding: "12px 16px",
+            border: "none",
+            background: mode === "webcam" ? "#2563eb" : "#fff",
+            color: mode === "webcam" ? "#fff" : "#333",
+            fontWeight: mode === "webcam" ? "bold" : "normal",
+            cursor: "pointer",
+            fontSize: 14,
+            borderRight: "1px solid #ddd",
+            transition: "all 0.2s"
+          },
+          children: "📹 Webcam Only"
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          onClick: () => setMode("pip"),
+          style: {
+            flex: 1,
+            padding: "12px 16px",
+            border: "none",
+            background: mode === "pip" ? "#2563eb" : "#fff",
+            color: mode === "pip" ? "#fff" : "#333",
+            fontWeight: mode === "pip" ? "bold" : "normal",
+            cursor: "pointer",
+            fontSize: 14,
+            transition: "all 0.2s"
+          },
+          children: "🎬 Screen + Webcam (PiP)"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      mode === "screen" && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        ScreenCapture,
+        {
+          onRecordingComplete,
+          videoRef,
+          setIsRecording
+        }
+      ),
+      mode === "webcam" && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        WebcamCapture,
+        {
+          onRecordingComplete,
+          videoRef,
+          setIsRecording
+        }
+      ),
+      mode === "pip" && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        PiPRecorder,
+        {
+          onRecordingComplete,
+          videoRef,
+          setIsRecording
+        }
+      )
+    ] })
+  ] });
+}
+function MediaLibrary({
+  items
+}) {
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
+    width: 240,
+    borderRight: "1px solid #eee",
+    background: "#fff",
+    height: "100%",
+    overflowY: "auto",
+    padding: 8,
+    boxSizing: "border-box"
+  }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 13, fontWeight: 700, margin: "4px 0 8px" }, children: "Media" }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "grid", gap: 8 }, children: items.map((it) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "div",
+      {
+        draggable: true,
+        onDragStart: (e) => {
+          e.dataTransfer.setData("application/x-clipforge-media-id", it.id);
+          e.dataTransfer.effectAllowed = "copy";
+        },
+        style: {
+          border: "1px solid #ddd",
+          borderRadius: 6,
+          overflow: "hidden",
+          background: "#fafafa",
+          cursor: "grab"
+        },
+        title: `${it.name}
+${it.duration.toFixed(2)}s${it.width ? ` • ${it.width}×${it.height}` : ""}`,
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { background: "#000", height: 112, display: "flex", alignItems: "center", justifyContent: "center" }, children: it.thumb ? /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: it.thumb, alt: it.name, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { color: "#888", fontSize: 12 }, children: "No preview" }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: "6px 8px" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: it.name }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { fontSize: 11, color: "#555" }, children: [
+              it.duration.toFixed(2),
+              "s",
+              it.width ? ` • ${it.width}×${it.height}` : ""
+            ] })
+          ] })
+        ]
+      },
+      it.id
+    )) })
+  ] });
 }
 const urlAlphabet = "useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict";
 let nanoid = (size = 21) => {
@@ -23909,7 +24864,8 @@ const mimeFor = (p2) => {
   if (ext === "mp4") return "video/mp4";
   if (ext === "mov") return "video/quicktime";
   if (ext === "webm") return "video/webm";
-  return "video/x-matroska";
+  if (ext === "mkv") return "video/x-matroska";
+  return "video/webm";
 };
 const COLORS = ["#93c5fd", "#86efac", "#fbcfe8", "#fde68a", "#c7d2fe", "#fed7aa", "#a7f3d0", "#fca5a5"];
 function App() {
@@ -23917,15 +24873,20 @@ function App() {
   const [fileName, setFileName] = reactExports.useState("");
   const [working, setWorking] = reactExports.useState("");
   const [progress, setProgress] = reactExports.useState("");
-  const [clips, setClips] = reactExports.useState([]);
-  const [selectedId, setSelectedId] = reactExports.useState(null);
+  const [tracks, setTracks] = reactExports.useState([[], []]);
+  const [activeTrack, setActiveTrack] = reactExports.useState(0);
+  const [selected, setSelected] = reactExports.useState(null);
+  const [library, setLibrary] = reactExports.useState([]);
   const [pxPerSec, setPxPerSec] = reactExports.useState(() => {
     const saved = localStorage.getItem("clipforge_pxPerSec");
     return saved ? Number(saved) : 80;
   });
   const [absTime, setAbsTime] = reactExports.useState(0);
+  const [isRecording, setIsRecording] = reactExports.useState(false);
+  const [timelineRes, setTimelineRes] = reactExports.useState("source");
   const videoRef = reactExports.useRef(null);
   const lastBlobUrlRef = reactExports.useRef(null);
+  const playThroughRef = reactExports.useRef(false);
   const setAbsTimeFromUser = (t2) => {
     const v2 = videoRef.current;
     if (v2 && !v2.paused) {
@@ -23941,8 +24902,26 @@ function App() {
     }
   }, []);
   reactExports.useEffect(() => {
+    if (window.clipforge?.projectLoad) {
+      window.clipforge.projectLoad()?.then((p2) => {
+        if (p2?.tracks) setTracks(p2.tracks);
+        if (p2?.pxPerSec) setPxPerSec(p2.pxPerSec);
+        if (p2?.library) setLibrary(p2.library);
+      });
+    }
+  }, []);
+  reactExports.useEffect(() => {
     localStorage.setItem("clipforge_pxPerSec", String(pxPerSec));
   }, [pxPerSec]);
+  reactExports.useEffect(() => {
+    const payload = { tracks, library, pxPerSec };
+    const t2 = setTimeout(() => {
+      if (window.clipforge?.projectSave) {
+        window.clipforge.projectSave(payload);
+      }
+    }, 400);
+    return () => clearTimeout(t2);
+  }, [tracks, library, pxPerSec]);
   reactExports.useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.code === "Space" && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -23955,25 +24934,37 @@ function App() {
         }
         return;
       }
-      if (e.key === "[" && selectedId) {
+      if (e.key === "[" && selected) {
         e.preventDefault();
-        setClips((prev) => prev.map((c) => {
-          if (c.id !== selectedId) return c;
-          const newIn = Math.max(0, c.in - 0.05);
-          return { ...c, in: Math.min(newIn, c.out - 0.05) };
-        }));
+        const t2 = selected.track;
+        const id2 = selected.id;
+        setTracks((prev) => {
+          const copy = prev.map((r2) => r2.slice());
+          copy[t2] = copy[t2].map((c) => {
+            if (c.id !== id2) return c;
+            const newIn = Math.max(0, c.in - 0.05);
+            return { ...c, in: Math.min(newIn, c.out - 0.05) };
+          });
+          return copy;
+        });
         return;
       }
-      if (e.key === "]" && selectedId) {
+      if (e.key === "]" && selected) {
         e.preventDefault();
-        setClips((prev) => prev.map((c) => {
-          if (c.id !== selectedId) return c;
-          const newOut = Math.min(c.duration, c.out + 0.05);
-          return { ...c, out: Math.max(newOut, c.in + 0.05) };
-        }));
+        const t2 = selected.track;
+        const id2 = selected.id;
+        setTracks((prev) => {
+          const copy = prev.map((r2) => r2.slice());
+          copy[t2] = copy[t2].map((c) => {
+            if (c.id !== id2) return c;
+            const newOut = Math.min(c.duration, c.out + 0.05);
+            return { ...c, out: Math.max(newOut, c.in + 0.05) };
+          });
+          return copy;
+        });
         return;
       }
-      if (e.key === "Backspace" && selectedId) {
+      if (e.key === "Backspace" && selected) {
         e.preventDefault();
         deleteSelected();
         return;
@@ -23981,25 +24972,25 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, clips]);
+  }, [selected, tracks]);
   const sequenceSpans = (() => {
-    let acc = 0;
-    const arr = clips.map((c) => {
+    const arrTrack = tracks[activeTrack];
+    const arr = arrTrack.map((c) => {
       const len = Math.max(0.05, c.out - c.in);
-      const start = acc;
-      acc += len;
+      const start = c.startTime ?? 0;
       return { id: c.id, start, len, clip: c };
     });
-    return { arr, total: acc };
+    const total = arr.length > 0 ? Math.max(...arr.map((b) => b.start + b.len)) : 0;
+    return { arr, total };
   })();
-  const selectedClip = clips.find((c) => c.id === selectedId) || null;
+  const selectedClip = selected ? tracks[selected.track].find((c) => c.id === selected.id) || null : null;
   reactExports.useEffect(() => {
     if (sequenceSpans.arr.length === 0) return;
     if (!selectedClip) {
       let acc = 0;
       for (const b of sequenceSpans.arr) {
         if (absTime >= acc && absTime <= acc + b.len + 1e-6) {
-          setSelectedId(b.id);
+          setSelected({ track: activeTrack, id: b.id });
           break;
         }
         acc += b.len;
@@ -24032,7 +25023,7 @@ function App() {
     })();
     return () => {
     };
-  }, [selectedId]);
+  }, [selected?.track, selected?.id]);
   reactExports.useEffect(() => {
     const v2 = videoRef.current;
     if (!v2 || !selectedClip) return;
@@ -24055,6 +25046,45 @@ function App() {
   }, [src, absTime, selectedClip, sequenceSpans.arr]);
   reactExports.useEffect(() => {
     const v2 = videoRef.current;
+    if (!v2 || !selectedClip || !src) return;
+    if (playThroughRef.current) {
+      playThroughRef.current = false;
+      const attemptPlay = () => {
+        if (!v2) return;
+        const playPromise = v2.play();
+        if (playPromise !== void 0) {
+          playPromise.catch(() => {
+          });
+        }
+      };
+      setTimeout(() => {
+        if (v2.readyState >= 2) {
+          attemptPlay();
+        }
+      }, 50);
+      const onLoaded = () => {
+        v2.removeEventListener("loadedmetadata", onLoaded);
+        setTimeout(attemptPlay, 50);
+      };
+      v2.addEventListener("loadedmetadata", onLoaded);
+      const onCanPlay = () => {
+        v2.removeEventListener("canplay", onCanPlay);
+        setTimeout(attemptPlay, 50);
+      };
+      v2.addEventListener("canplay", onCanPlay);
+      const cleanup = setTimeout(() => {
+        v2.removeEventListener("loadedmetadata", onLoaded);
+        v2.removeEventListener("canplay", onCanPlay);
+      }, 3e3);
+      return () => {
+        clearTimeout(cleanup);
+        v2.removeEventListener("loadedmetadata", onLoaded);
+        v2.removeEventListener("canplay", onCanPlay);
+      };
+    }
+  }, [selectedClip, src]);
+  reactExports.useEffect(() => {
+    const v2 = videoRef.current;
     if (!v2 || !selectedClip || !v2.duration || !Number.isFinite(v2.duration)) return;
     if (!v2.paused) return;
     const startAbs = sequenceSpans.arr.find((b) => b.id === selectedClip.id)?.start ?? 0;
@@ -24073,17 +25103,155 @@ function App() {
     const v2 = videoRef.current;
     if (!v2 || !selectedClip) return;
     const tick = () => {
+      if (isRecording) return;
       if (v2.paused) return;
       const startAbs = sequenceSpans.arr.find((b) => b.id === selectedClip.id)?.start ?? 0;
       const local = v2.currentTime;
       const calculatedAbs = startAbs + Math.max(0, local - selectedClip.in);
       setAbsTime(calculatedAbs);
+      const epsilon = 0.15;
+      if (local >= selectedClip.out - epsilon) {
+        const idx = sequenceSpans.arr.findIndex((b) => b.id === selectedClip.id);
+        const next = sequenceSpans.arr[idx + 1];
+        if (next) {
+          playThroughRef.current = true;
+          v2.pause();
+          setSelected({ track: activeTrack, id: next.id });
+          setAbsTime(next.start);
+        } else {
+          v2.pause();
+        }
+      }
     };
     v2.addEventListener("timeupdate", tick);
     return () => {
       v2.removeEventListener("timeupdate", tick);
     };
-  }, [selectedClip, sequenceSpans.arr]);
+  }, [selectedClip, sequenceSpans.arr, isRecording]);
+  reactExports.useEffect(() => {
+    const onDragOver = (e) => {
+      e.preventDefault();
+    };
+    const onDrop = async (e) => {
+      e.preventDefault();
+      const rawPaths = [];
+      if (e.dataTransfer?.files?.length) {
+        for (const f2 of Array.from(e.dataTransfer.files)) {
+          if (f2.path) rawPaths.push(f2.path);
+        }
+      }
+      if (!rawPaths.length) return;
+      const paths = await window.clipforge.importPaths(rawPaths);
+      if (!paths.length) return;
+      for (const p2 of paths) {
+        await addToLibrary(p2);
+      }
+    };
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
+  const captureThumb = async (path, type) => {
+    try {
+      const bytes = await window.clipforge.readFileBytes(path);
+      const blob = new Blob([bytes], { type });
+      const url = URL.createObjectURL(blob);
+      const v2 = document.createElement("video");
+      v2.preload = "metadata";
+      v2.src = url;
+      await v2.play().catch(() => {
+      });
+      v2.pause();
+      await new Promise((res) => {
+        if (v2.readyState >= 1) return res();
+        v2.onloadedmetadata = () => res();
+        setTimeout(res, 1e3);
+      });
+      const w2 = Math.max(200, v2.videoWidth);
+      const h = Math.max(112, Math.round((v2.videoHeight || 112) * (w2 / (v2.videoWidth || 1))));
+      const canvas = document.createElement("canvas");
+      canvas.width = w2;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(v2, 0, 0, w2, h);
+      URL.revokeObjectURL(url);
+      return canvas.toDataURL("image/jpeg", 0.72);
+    } catch {
+      return void 0;
+    }
+  };
+  const addToLibrary = async (absPath) => {
+    const name = absPath.split(/[\\/]/).pop() || "clip";
+    const meta = await probeMedia(absPath);
+    const thumb = await captureThumb(absPath, mimeFor(absPath));
+    const item = {
+      id: nanoid(8),
+      name,
+      path: absPath,
+      duration: meta.duration || 1,
+      width: meta.width,
+      height: meta.height,
+      thumb
+    };
+    setLibrary((prev) => [...prev, item]);
+  };
+  const appendClipToTrackEnd = (track, item) => {
+    const color = COLORS[tracks[track].length % COLORS.length];
+    const existingClips = tracks[track];
+    const rightmostEdge = existingClips.length > 0 ? Math.max(...existingClips.map((c) => (c.startTime ?? 0) + (c.out - c.in))) : 0;
+    const clip = {
+      id: nanoid(8),
+      name: item.name,
+      path: item.path,
+      in: 0,
+      out: Math.max(0.05, item.duration || 1),
+      duration: item.duration || 1,
+      color,
+      width: item.width,
+      height: item.height,
+      startTime: rightmostEdge
+    };
+    setTracks((prev) => {
+      const copy = prev.map((r2) => r2.slice());
+      copy[track].push(clip);
+      return copy;
+    });
+    setSelected({ track, id: clip.id });
+    setAbsTime(rightmostEdge);
+  };
+  const insertClipAt = (track, index, item) => {
+    const color = COLORS[tracks[track].length % COLORS.length];
+    const existingClips = tracks[track];
+    let startTime = 0;
+    if (index > 0 && index <= existingClips.length) {
+      const prevClip = existingClips[index - 1];
+      if (prevClip) {
+        startTime = (prevClip.startTime ?? 0) + (prevClip.out - prevClip.in);
+      }
+    }
+    const clip = {
+      id: nanoid(8),
+      name: item.name,
+      path: item.path,
+      in: 0,
+      out: Math.max(0.05, item.duration || 1),
+      duration: item.duration || 1,
+      color,
+      width: item.width,
+      height: item.height,
+      startTime
+    };
+    setTracks((prev) => {
+      const copy = prev.map((r2) => r2.slice());
+      const clamped = Math.max(0, Math.min(copy[track].length, index));
+      copy[track].splice(clamped, 0, clip);
+      return copy;
+    });
+    setSelected({ track, id: clip.id });
+  };
   const onImport = async () => {
     if (!window.clipforge?.openVideos) {
       alert("Bridge not available — check preload and sandbox:false");
@@ -24091,26 +25259,9 @@ function App() {
     }
     const paths = await window.clipforge.openVideos();
     if (!paths?.length) return;
-    const p2 = paths[0];
-    const id2 = nanoid(8);
-    const name = p2.split(/[\\/]/).pop() || "clip";
-    const color = COLORS[clips.length % COLORS.length];
-    const duration = await probeDuration(p2);
-    const next = {
-      id: id2,
-      name,
-      path: p2,
-      in: 0,
-      out: Math.max(0.05, duration || 1),
-      duration: duration || 1,
-      color
-    };
-    setClips((prev) => [...prev, next]);
-    setSelectedId(id2);
-    const total = sequenceSpans.total + (next.out - next.in);
-    setAbsTime(total);
+    for (const p2 of paths) await addToLibrary(p2);
   };
-  const probeDuration = async (path) => {
+  const probeMedia = async (path) => {
     try {
       const bytes = await window.clipforge.readFileBytes(path);
       const blob = new Blob([bytes], { type: mimeFor(path) });
@@ -24118,23 +25269,39 @@ function App() {
       const v2 = document.createElement("video");
       v2.preload = "metadata";
       return await new Promise((resolve) => {
+        let done = false;
         const cleanup = () => {
-          URL.revokeObjectURL(url);
+          if (!done) {
+            done = true;
+            URL.revokeObjectURL(url);
+          }
         };
-        v2.onloadedmetadata = () => {
-          const d = Number(v2.duration);
+        const to = setTimeout(() => {
           cleanup();
-          resolve(Number.isFinite(d) ? d : 0);
+          resolve({ duration: 0 });
+        }, 1e4);
+        v2.onloadedmetadata = () => {
+          clearTimeout(to);
+          const d = Number(v2.duration);
+          const width = v2.videoWidth || void 0;
+          const height = v2.videoHeight || void 0;
+          cleanup();
+          resolve({ duration: Number.isFinite(d) && d > 0 ? d : 0, width, height });
         };
         v2.onerror = () => {
+          clearTimeout(to);
           cleanup();
-          resolve(0);
+          resolve({ duration: 0 });
         };
         v2.src = url;
       });
     } catch {
-      return 0;
+      return { duration: 0 };
     }
+  };
+  const handleRecordingComplete = async (filePath) => {
+    await new Promise((resolve) => setTimeout(resolve, 1e3));
+    await addToLibrary(filePath);
   };
   const exportSelected = async () => {
     const sel = selectedClip;
@@ -24158,49 +25325,70 @@ function App() {
       setTimeout(() => setWorking(""), 1500);
     }
   };
-  const onReorder = (fromId, toIndex) => {
-    setClips((prev) => {
-      const idx = prev.findIndex((c) => c.id === fromId);
-      if (idx < 0) return prev;
-      const arr = prev.slice();
-      const [it] = arr.splice(idx, 1);
-      const clamped = Math.max(0, Math.min(arr.length, toIndex));
-      arr.splice(clamped, 0, it);
-      return arr;
+  const onMove = (track, id2, newStartTime) => {
+    setTracks((prev) => {
+      const copy = prev.map((r2) => r2.slice());
+      copy[track] = copy[track].map(
+        (c) => c.id === id2 ? { ...c, startTime: newStartTime } : c
+      );
+      return copy;
     });
   };
-  const onTrim = (id2, which, next) => {
-    setClips((prev) => prev.map((c) => {
-      if (c.id !== id2) return c;
-      if (which === "in") {
-        const nin = Math.max(0, Math.min(next, c.out - 0.05));
-        return { ...c, in: nin };
-      } else {
-        const nout = Math.min(c.duration, Math.max(next, c.in + 0.05));
-        return { ...c, out: nout };
-      }
-    }));
+  const onTrim = (track, id2, which, next) => {
+    setTracks((prev) => {
+      const copy = prev.map((r2) => r2.slice());
+      copy[track] = copy[track].map((c) => {
+        if (c.id !== id2) return c;
+        if (which === "in") return { ...c, in: Math.max(0, Math.min(next, c.out - 0.05)) };
+        else return { ...c, out: Math.min(c.duration, Math.max(next, c.in + 0.05)) };
+      });
+      return copy;
+    });
   };
   const splitAtPlayhead = () => {
-    if (!selectedId) return;
-    const idx = clips.findIndex((c2) => c2.id === selectedId);
+    if (!selected) return;
+    const t2 = selected.track;
+    const id2 = selected.id;
+    const idx = tracks[t2].findIndex((c2) => c2.id === id2);
     if (idx < 0) return;
-    const c = clips[idx];
+    const c = tracks[t2][idx];
     const startAbs = sequenceSpans.arr.find((b) => b.id === c.id)?.start ?? 0;
     const local = c.in + Math.max(0, absTime - startAbs);
     if (local <= c.in + 0.05 || local >= c.out - 0.05) return;
     const left = { ...c, id: nanoid(8), out: local };
-    const right = { ...c, id: nanoid(8), in: local, name: c.name + " (2)" };
-    setClips((prev) => prev.toSpliced(idx, 1, left, right));
-    setSelectedId(right.id);
+    const rightStartTime = (c.startTime ?? 0) + (local - c.in);
+    const right = { ...c, id: nanoid(8), in: local, name: c.name + " (2)", startTime: rightStartTime };
+    setTracks((prev) => {
+      const copy = prev.map((r2) => r2.slice());
+      copy[t2].splice(idx, 1, left, right);
+      return copy;
+    });
+    setSelected({ track: t2, id: right.id });
   };
   const deleteSelected = () => {
-    if (!selectedId) return;
-    setClips((prev) => prev.filter((c) => c.id !== selectedId));
-    setSelectedId(null);
+    if (!selected) return;
+    const t2 = selected.track;
+    const id2 = selected.id;
+    const v2 = videoRef.current;
+    if (v2) {
+      v2.pause();
+    }
+    setTracks((prev) => {
+      const copy = prev.map((r2) => r2.slice());
+      copy[t2] = copy[t2].filter((c) => c.id !== id2);
+      return copy;
+    });
+    setSelected(null);
+    if (tracks[0].length + tracks[1].length === 0) {
+      if (src) {
+        URL.revokeObjectURL(src);
+      }
+      setSrc(null);
+      setFileName("");
+    }
   };
   const exportTimeline = async () => {
-    if (!clips.length) return;
+    if (!tracks[activeTrack].length) return;
     setWorking("Rendering timeline…");
     setProgress("");
     try {
@@ -24209,7 +25397,8 @@ function App() {
         tIn: b.clip.in,
         tOut: b.clip.out
       }));
-      const bytes = await window.clipforge.exportTimeline(parts, 22);
+      const targetHeight = timelineRes === "720p" ? 720 : timelineRes === "1080p" ? 1080 : 0;
+      const bytes = await window.clipforge.exportTimeline(parts, 22, targetHeight);
       const suggested = "timeline_export.mp4";
       const res = await window.clipforge.saveBytes(suggested, bytes);
       setWorking(res.saved ? "Exported ✅" : "Canceled");
@@ -24228,29 +25417,165 @@ function App() {
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "toolbar", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: onImport, children: "➕ Import" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: splitAtPlayhead, disabled: !selectedId, children: "✂️ Split" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: deleteSelected, disabled: !selectedId, children: "🗑️ Delete" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: splitAtPlayhead, disabled: !selected, children: "✂️ Split" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: deleteSelected, disabled: !selected, children: "🗑️ Delete" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "meta", style: { marginLeft: 8 }, children: [
+        "Export res:",
+        " ",
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "select",
+          {
+            value: timelineRes,
+            onChange: (e) => setTimelineRes(e.target.value),
+            style: { fontSize: 12 },
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "source", children: "Source" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "720p", children: "720p" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "1080p", children: "1080p" })
+            ]
+          }
+        )
+      ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: exportSelected, disabled: !selectedClip, children: "💾 Export MP4 (selected)" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: exportTimeline, disabled: !clips.length, children: "📤 Export Timeline" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: exportTimeline, disabled: !tracks[activeTrack].length, children: "📤 Export Timeline" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, borderLeft: "1px solid #ddd", paddingLeft: 12 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { style: { fontSize: 12, color: "#555" }, children: "AI Summary:" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "input",
+          {
+            type: "number",
+            min: 5,
+            max: 90,
+            defaultValue: 30,
+            id: "aiPct",
+            style: { width: 56, padding: "4px 6px", fontSize: 12, border: "1px solid #ddd", borderRadius: 4 }
+          }
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11, color: "#666" }, children: "%" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            onClick: async () => {
+              const pctEl = document.getElementById("aiPct");
+              const pct = Math.max(5, Math.min(90, Number(pctEl.value || 30)));
+              const parts = sequenceSpans.arr.map((b) => ({
+                inputPath: b.clip.path,
+                tIn: b.clip.in,
+                tOut: b.clip.out
+              }));
+              if (!parts.length) {
+                alert("Add some clips to the timeline first");
+                return;
+              }
+              setWorking("AI summarizing… (this may take a few minutes)");
+              setProgress("Extracting audio and transcribing...");
+              try {
+                const res = await window.clipforge.aiSummarize({ parts, targetRatio: pct / 100 });
+                setWorking(res.saved ? "AI Summary saved ✅" : "Canceled");
+                setProgress("");
+              } catch (e) {
+                console.error(e);
+                setWorking("AI summary failed ❌");
+                setProgress(e.message || "Unknown error");
+              } finally {
+                setTimeout(() => {
+                  setWorking("");
+                  setProgress("");
+                }, 3e3);
+              }
+            },
+            disabled: !tracks[activeTrack].length,
+            style: { padding: "6px 12px", fontSize: 13, background: "#7c3aed", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 500 },
+            title: "Use AI to create a shorter version with the most important parts",
+            children: "✨ Summarize"
+          }
+        )
+      ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "meta", children: working })
     ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "main", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "player", children: src ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "video",
-        {
-          ref: videoRef,
-          src,
-          controls: true,
-          style: {}
-        }
-      ) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { color: "#444", padding: 24 }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "ClipForge" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Import a video to get started." })
-      ] }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "timeline", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "main", style: {
+      display: "grid",
+      gridTemplateColumns: "240px 1fr",
+      gridTemplateRows: "1fr auto",
+      gridTemplateAreas: '"lib player" "lib timeline"',
+      height: "calc(100vh - 52px)"
+    }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { gridArea: "lib", display: "flex", flexDirection: "column" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(MediaLibrary, { items: library }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: 8, borderTop: "1px solid #eee", borderRight: "1px solid #eee" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, marginBottom: 6 }, children: "Active track:" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                onClick: () => setActiveTrack(0),
+                style: {
+                  padding: "4px 8px",
+                  fontSize: 12,
+                  background: activeTrack === 0 ? "#2563eb" : "#fff",
+                  color: activeTrack === 0 ? "#fff" : "#333",
+                  border: "1px solid #ddd",
+                  borderRadius: 4
+                },
+                children: "Main"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                onClick: () => setActiveTrack(1),
+                style: {
+                  padding: "4px 8px",
+                  fontSize: 12,
+                  background: activeTrack === 1 ? "#2563eb" : "#fff",
+                  color: activeTrack === 1 ? "#fff" : "#333",
+                  border: "1px solid #ddd",
+                  borderRadius: 4
+                },
+                children: "Overlay"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              onClick: () => {
+                const it = library[library.length - 1];
+                if (it) appendClipToTrackEnd(activeTrack, it);
+              },
+              style: { padding: "4px 8px", fontSize: 12 },
+              disabled: !library.length,
+              children: "Add last to active"
+            }
+          ) })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "player", style: { gridArea: "player" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "video",
+          {
+            ref: videoRef,
+            src: src || void 0,
+            controls: true,
+            muted: isRecording,
+            playsInline: true,
+            style: {
+              display: src || isRecording ? "block" : "none",
+              width: "100%",
+              height: "auto"
+            }
+          }
+        ),
+        !src && !isRecording && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { color: "#444", padding: 24 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "ClipForge" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Drag & drop videos or click Import to get started." })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "timeline", style: { gridArea: "timeline" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "timelineHeader", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: "Timeline" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.max(10, Math.floor(v2 * 0.8))), style: { padding: "2px 6px" }, children: "–" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { marginLeft: 8, fontSize: 12, color: "#666" }, children: "Tracks: Main (0) + Overlay (1)" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.max(10, Math.floor(v2 * 0.8))), style: { padding: "2px 6px", marginLeft: "auto" }, children: "–" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPxPerSec((v2) => Math.min(800, Math.ceil(v2 * 1.25))), style: { padding: "2px 6px" }, children: "+" }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { color: "#666" }, children: [
             Math.round(pxPerSec),
@@ -24260,19 +25585,33 @@ function App() {
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "timelineWrap", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
           TimelineCanvas,
           {
-            clips,
-            selectedId,
-            setSelectedId,
+            tracks,
+            activeTrack,
+            selected,
+            setSelected,
             pxPerSec,
             setPxPerSec,
             absTime,
             setAbsTime: setAbsTimeFromUser,
-            onReorder,
-            onTrim
+            onMove,
+            onTrim,
+            onExternalDrop: (track, atIndex, libId) => {
+              const it = library.find((x2) => x2.id === libId);
+              if (!it) return;
+              insertClipAt(track, atIndex, it);
+            }
           }
         ) })
       ] })
     ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx(
+      RecordingPanel,
+      {
+        onRecordingComplete: handleRecordingComplete,
+        videoRef,
+        setIsRecording
+      }
+    ),
     progress && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
       position: "fixed",
       bottom: 0,

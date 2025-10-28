@@ -84,9 +84,32 @@ export default function App() {
     if (window.clipforge?.projectLoad) {
       // @ts-expect-error preload
       window.clipforge.projectLoad()?.then((p: any) => {
-        if (p?.tracks) setTracks(p.tracks)
-        if (p?.pxPerSec) setPxPerSec(p.pxPerSec)
-        if (p?.library) setLibrary(p.library)
+        console.log('[ProjectLoad] Loaded project:', p)
+        
+        // Validate tracks structure
+        if (p?.tracks && Array.isArray(p.tracks)) {
+          const isValid = p.tracks.length === 2 && 
+                         Array.isArray(p.tracks[0]) && 
+                         Array.isArray(p.tracks[1])
+          if (isValid) {
+            console.log('[ProjectLoad] Restoring tracks:', p.tracks[0].length, 'clips on track 0,', p.tracks[1].length, 'clips on track 1')
+            setTracks(p.tracks)
+          } else {
+            console.error('[ProjectLoad] Invalid tracks structure, ignoring')
+          }
+        }
+        
+        if (p?.pxPerSec && typeof p.pxPerSec === 'number') {
+          console.log('[ProjectLoad] Restoring zoom:', p.pxPerSec)
+          setPxPerSec(p.pxPerSec)
+        }
+        
+        if (p?.library && Array.isArray(p.library)) {
+          console.log('[ProjectLoad] Restoring library:', p.library.length, 'items')
+          setLibrary(p.library)
+        }
+      }).catch((err: any) => {
+        console.error('[ProjectLoad] Failed to load project:', err)
       })
     }
   }, [])
@@ -173,33 +196,39 @@ export default function App() {
   // derive selected clip + local time mapping (for active track)
   // Using absolute positioning now
   const sequenceSpans = (() => {
-    const arrTrack = tracks[activeTrack]
-    const arr = arrTrack.map(c => {
-      const len = Math.max(0.05, c.out - c.in)
-      const start = c.startTime ?? 0
-      return { id: c.id, start, len, clip: c }
-    })
-    const total = arr.length > 0 ? Math.max(...arr.map(b => b.start + b.len)) : 0
-    return { arr, total }
+    try {
+      const arrTrack = tracks[activeTrack] || []
+      const arr = arrTrack.map(c => {
+        const len = Math.max(0.05, c.out - c.in)
+        const start = c.startTime ?? 0
+        return { id: c.id, start, len, clip: c }
+      })
+      const total = arr.length > 0 ? Math.max(...arr.map(b => b.start + b.len)) : 0
+      return { arr, total }
+    } catch (err) {
+      console.error('[sequenceSpans] Error:', err)
+      return { arr: [], total: 0 }
+    }
   })()
 
   const selectedClip = selected
-    ? tracks[selected.track].find(c => c.id === selected.id) || null
+    ? tracks[selected.track]?.find(c => c.id === selected.id) || null
     : null
 
   // absTime -> selected clip & local time for the video element
   // Only auto-select when there's no current selection
   useEffect(() => {
     if (sequenceSpans.arr.length === 0) return
-    // if no selection, pick the block at absTime
+    // if no selection, pick the block at absTime (using absolute positioning)
     if (!selectedClip) {
-      let acc = 0
       for (const b of sequenceSpans.arr) {
-        if (absTime >= acc && absTime <= acc + b.len + 1e-6) {
+        const clipStart = b.start
+        const clipEnd = b.start + b.len
+        if (absTime >= clipStart && absTime <= clipEnd + 1e-6) {
+          console.log('[Auto-select] Selecting clip at absTime', absTime, ':', b.clip.name)
           setSelected({ track: activeTrack, id: b.id })
           break
         }
-        acc += b.len
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -442,17 +471,34 @@ export default function App() {
 
   // Add file to library
   const addToLibrary = async (absPath: string) => {
-    const name = (absPath.split(/[\\/]/).pop() || 'clip')
-    const meta = await probeMedia(absPath)
-    const thumb = await captureThumb(absPath, mimeFor(absPath))
-    const item: LibraryItem = {
-      id: nanoid(8),
-      name, path: absPath,
-      duration: meta.duration || 1,
-      width: meta.width, height: meta.height,
-      thumb
+    try {
+      console.log('[addToLibrary] Processing:', absPath)
+      const name = (absPath.split(/[\\/]/).pop() || 'clip')
+      console.log('[addToLibrary] Probing media...')
+      const meta = await probeMedia(absPath)
+      console.log('[addToLibrary] Meta:', meta)
+      console.log('[addToLibrary] Capturing thumbnail...')
+      const thumb = await captureThumb(absPath, mimeFor(absPath))
+      console.log('[addToLibrary] Thumb captured:', thumb ? 'yes' : 'no')
+      const item: LibraryItem = {
+        id: nanoid(8),
+        name, path: absPath,
+        duration: meta.duration || 1,
+        width: meta.width, height: meta.height,
+        thumb
+      }
+      console.log('[addToLibrary] Adding to library state')
+      setLibrary(prev => [...prev, item])
+      console.log('[addToLibrary] Done')
+    } catch (err) {
+      console.error('[addToLibrary] Failed for', absPath, ':', err)
+      throw err
     }
-    setLibrary(prev => [...prev, item])
+  }
+
+  // Remove item from library
+  const removeFromLibrary = (id: string) => {
+    setLibrary(prev => prev.filter(item => item.id !== id))
   }
 
   // Add library item to end of track
@@ -487,47 +533,99 @@ export default function App() {
 
   // Insert library item at specific position in track
   const insertClipAt = (track: 0|1, index: number, item: LibraryItem) => {
-    const color = COLORS[(tracks[track].length) % COLORS.length]
-    
-    // Calculate startTime: place at end of previous clip, or at 0 if first
-    const existingClips = tracks[track]
-    let startTime = 0
-    
-    if (index > 0 && index <= existingClips.length) {
-      // Insert after clip at index-1
-      const prevClip = existingClips[index - 1]
-      if (prevClip) {
-        startTime = (prevClip.startTime ?? 0) + (prevClip.out - prevClip.in)
+    try {
+      console.log('[insertClipAt] track:', track, 'index:', index, 'item:', item.name)
+      const color = COLORS[(tracks[track].length) % COLORS.length]
+      
+      // Calculate startTime: place at end of previous clip, or at 0 if first
+      const existingClips = tracks[track]
+      console.log('[insertClipAt] existingClips count:', existingClips.length)
+      let startTime = 0
+      
+      if (index > 0 && index <= existingClips.length) {
+        // Sort clips by startTime to find actual previous clip
+        const sorted = [...existingClips].sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0))
+        if (sorted[index - 1]) {
+          const prevClip = sorted[index - 1]
+          startTime = (prevClip.startTime ?? 0) + (prevClip.out - prevClip.in)
+        }
       }
+      console.log('[insertClipAt] initial startTime:', startTime)
+      
+      const newClipDuration = Math.max(0.05, item.duration || 1)
+      console.log('[insertClipAt] newClipDuration:', newClipDuration)
+      
+      // Check for collisions and find valid position
+      const otherClips = existingClips
+        .map(c => ({
+          start: c.startTime ?? 0,
+          end: (c.startTime ?? 0) + (c.out - c.in)
+        }))
+        .sort((a, b) => a.start - b.start)
+      
+      console.log('[insertClipAt] otherClips:', otherClips)
+      
+      // Snap to non-overlapping position
+      for (const other of otherClips) {
+        const targetEnd = startTime + newClipDuration
+        
+        if (startTime < other.end && targetEnd > other.start) {
+          // Collision detected, snap after this clip
+          console.log('[insertClipAt] collision detected, snapping from', startTime, 'to', other.end)
+          startTime = other.end
+        }
+      }
+      
+      console.log('[insertClipAt] final startTime:', startTime)
+      
+      const clip: Clip = {
+        id: nanoid(8),
+        name: item.name, path: item.path,
+        in: 0, out: newClipDuration,
+        duration: item.duration || 1,
+        color, width: item.width, height: item.height,
+        startTime,
+      }
+      console.log('[insertClipAt] created clip:', clip)
+      
+      setTracks(prev => {
+        const copy = prev.map(r => r.slice()) as Clip[][]
+        copy[track].push(clip) // Just append, position is determined by startTime
+        return copy
+      })
+      console.log('[insertClipAt] tracks updated')
+      
+      setSelected({ track, id: clip.id })
+      console.log('[insertClipAt] selection updated')
+    } catch (err) {
+      console.error('[insertClipAt] ERROR:', err)
+      throw err
     }
-    
-    const clip: Clip = {
-      id: nanoid(8),
-      name: item.name, path: item.path,
-      in: 0, out: Math.max(0.05, item.duration || 1),
-      duration: item.duration || 1,
-      color, width: item.width, height: item.height,
-      startTime,
-    }
-    setTracks(prev => {
-      const copy = prev.map(r => r.slice()) as Clip[][]
-      const clamped = Math.max(0, Math.min(copy[track].length, index))
-      copy[track].splice(clamped, 0, clip)
-      return copy
-    })
-    setSelected({ track, id: clip.id })
   }
 
   // Import: add to library (not directly timeline)
   const onImport = async () => {
-    // @ts-expect-error preload
-    if (!window.clipforge?.openVideos) {
-      alert('Bridge not available — check preload and sandbox:false')
-      return
+    try {
+      console.log('[Import] Starting import...')
+      // @ts-expect-error preload
+      if (!window.clipforge?.openVideos) {
+        alert('Bridge not available — check preload and sandbox:false')
+        return
+      }
+      const paths: string[] = await window.clipforge.openVideos()
+      console.log('[Import] Got paths:', paths)
+      if (!paths?.length) return
+      
+      for (const p of paths) {
+        console.log('[Import] Adding to library:', p)
+        await addToLibrary(p)
+        console.log('[Import] Added successfully:', p)
+      }
+      console.log('[Import] All imports complete')
+    } catch (err) {
+      console.error('[Import] Import failed:', err)
+      alert(`Import failed: ${err}`)
     }
-    const paths: string[] = await window.clipforge.openVideos()
-    if (!paths?.length) return
-    for (const p of paths) await addToLibrary(p)
   }
 
   // Probe media metadata (duration + resolution) by reading bytes and loading a blob URL
@@ -592,12 +690,51 @@ export default function App() {
     }
   }
 
-  // Move clip to new start time (absolute positioning)
+  // Move clip to new start time (absolute positioning with collision detection)
   const onMove = (track: 0|1, id: string, newStartTime: number) => {
     setTracks(prev => {
       const copy = prev.map(r => r.slice()) as Clip[][]
+      const clip = copy[track].find(c => c.id === id)
+      if (!clip) return prev
+      
+      const clipDuration = clip.out - clip.in
+      let targetStart = Math.max(0, newStartTime)
+      
+      // Get other clips on same track with their time ranges
+      const otherClips = copy[track]
+        .filter(c => c.id !== id)
+        .map(c => ({
+          start: c.startTime ?? 0,
+          end: (c.startTime ?? 0) + (c.out - c.in),
+          clip: c
+        }))
+        .sort((a, b) => a.start - b.start)
+      
+      // Check for collisions and snap to nearest valid position
+      for (const other of otherClips) {
+        const targetEnd = targetStart + clipDuration
+        
+        // If we'd overlap with this clip
+        if (targetStart < other.end && targetEnd > other.start) {
+          // Try snapping before this clip
+          const snapBefore = other.start - clipDuration
+          // Try snapping after this clip
+          const snapAfter = other.end
+          
+          // Choose the snap position closest to target
+          const distBefore = Math.abs(snapBefore - targetStart)
+          const distAfter = Math.abs(snapAfter - targetStart)
+          
+          if (snapBefore >= 0 && distBefore < distAfter) {
+            targetStart = snapBefore
+          } else {
+            targetStart = snapAfter
+          }
+        }
+      }
+      
       copy[track] = copy[track].map(c => 
-        c.id === id ? { ...c, startTime: newStartTime } : c
+        c.id === id ? { ...c, startTime: targetStart } : c
       )
       return copy
     })
@@ -706,6 +843,26 @@ export default function App() {
   return (
     <div>
       <div className="toolbar">
+        <button 
+          onClick={() => {
+            if (tracks[0].length || tracks[1].length || library.length) {
+              if (!confirm('Clear all clips and library items? This cannot be undone.')) return
+            }
+            setTracks([[], []])
+            setLibrary([])
+            setSelected(null)
+            setAbsTime(0)
+            setFileName('')
+            if (videoRef.current) {
+              videoRef.current.src = ''
+              videoRef.current.load()
+            }
+          }}
+          style={{ background:'#ef4444', color:'#fff', fontWeight:500 }}
+          title="Start a new project (clears everything)"
+        >
+          🆕 New Project
+        </button>
         <button onClick={onImport}>➕ Import</button>
         <button onClick={splitAtPlayhead} disabled={!selected}>✂️ Split</button>
         <button onClick={deleteSelected} disabled={!selected}>🗑️ Delete</button>
@@ -726,6 +883,63 @@ export default function App() {
         
         <button onClick={exportSelected} disabled={!selectedClip}>💾 Export MP4 (selected)</button>
         <button onClick={exportTimeline} disabled={!tracks[activeTrack].length}>📤 Export Timeline</button>
+        
+        {/* AI Summarization */}
+        <div style={{ marginLeft: 'auto', display:'flex', alignItems:'center', gap:8, borderLeft:'1px solid #ddd', paddingLeft:12 }}>
+          <label style={{ fontSize:12, color:'#555' }}>AI Summary:</label>
+          <input
+            type="number"
+            min={5}
+            max={90}
+            defaultValue={30}
+            id="aiPct"
+            style={{ width: 56, padding:'4px 6px', fontSize:12, border:'1px solid #ddd', borderRadius:4 }}
+          />
+          <span style={{ fontSize:11, color:'#666' }}>%</span>
+          <button
+            onClick={async () => {
+              const pctEl = document.getElementById('aiPct') as HTMLInputElement
+              const pct = Math.max(5, Math.min(90, Number(pctEl.value || 30)))
+              // Use the active track's clips
+              const parts = sequenceSpans.arr.map(b => ({
+                inputPath: b.clip.path,
+                tIn: b.clip.in,
+                tOut: b.clip.out,
+              }))
+              if (!parts.length) {
+                alert('Add some clips to the timeline first')
+                return
+              }
+              setWorking('AI summarizing… (this may take a few minutes)')
+              setProgress('Extracting audio and transcribing...')
+              try {
+                // @ts-expect-error preload
+                const res = await window.clipforge.aiSummarize({ parts, targetRatio: pct/100 })
+                if (res.saved && res.path) {
+                  setWorking('Adding summary to library...')
+                  // Add the summary to the media library
+                  await addToLibrary(res.path)
+                  setWorking('AI Summary created & added to library ✅')
+                } else {
+                  setWorking('Canceled')
+                }
+                setProgress('')
+              } catch (e: any) {
+                console.error(e)
+                setWorking('AI summary failed ❌')
+                setProgress(e.message || 'Unknown error')
+              } finally {
+                setTimeout(()=>{ setWorking(''); setProgress('') }, 3000)
+              }
+            }}
+            disabled={!tracks[activeTrack].length}
+            style={{ padding:'6px 12px', fontSize:13, background:'#7c3aed', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:500 }}
+            title="Use AI to create a shorter version with the most important parts"
+          >
+            ✨ Summarize
+          </button>
+        </div>
+        
         <span className="meta">{working}</span>
       </div>
 
@@ -739,7 +953,7 @@ export default function App() {
       }}>
         {/* Left rail: Media Library */}
         <div style={{ gridArea:'lib', display:'flex', flexDirection:'column' }}>
-          <MediaLibrary items={library} />
+          <MediaLibrary items={library} onDelete={removeFromLibrary} />
           <div style={{ padding:8, borderTop:'1px solid #eee', borderRight:'1px solid #eee' }}>
             <div style={{ fontSize:12, marginBottom:6 }}>Active track:</div>
             <div style={{ display:'flex', gap:6 }}>
@@ -808,9 +1022,9 @@ export default function App() {
           <div className="timelineHeader">
             <b>Timeline</b>
             <span style={{ marginLeft:8, fontSize:12, color:'#666' }}>Tracks: Main (0) + Overlay (1)</span>
-            <button onClick={() => setPxPerSec(v => Math.max(10, Math.floor(v * 0.8)))} style={{ padding:'2px 6px', marginLeft:'auto' }}>–</button>
+            <button onClick={() => setPxPerSec(v => Math.max(0.5, Math.floor(v * 0.8 * 100) / 100))} style={{ padding:'2px 6px', marginLeft:'auto' }}>–</button>
             <button onClick={() => setPxPerSec(v => Math.min(800, Math.ceil(v * 1.25)))} style={{ padding:'2px 6px' }}>+</button>
-            <span style={{ color:'#666' }}>{Math.round(pxPerSec)} px/s</span>
+            <span style={{ color:'#666' }}>{pxPerSec < 10 ? pxPerSec.toFixed(1) : Math.round(pxPerSec)} px/s</span>
           </div>
 
           <div className="timelineWrap">
@@ -826,9 +1040,18 @@ export default function App() {
               onMove={onMove}
               onTrim={onTrim}
               onExternalDrop={(track, atIndex, libId) => {
-                const it = library.find(x => x.id === libId)
-                if (!it) return
-                insertClipAt(track, atIndex, it)
+                try {
+                  console.log('[onExternalDrop] track:', track, 'atIndex:', atIndex, 'libId:', libId)
+                  const it = library.find(x => x.id === libId)
+                  console.log('[onExternalDrop] found item:', it?.name)
+                  if (!it) {
+                    console.error('[onExternalDrop] item not found in library!')
+                    return
+                  }
+                  insertClipAt(track, atIndex, it)
+                } catch (err) {
+                  console.error('[onExternalDrop] ERROR:', err)
+                }
               }}
             />
           </div>

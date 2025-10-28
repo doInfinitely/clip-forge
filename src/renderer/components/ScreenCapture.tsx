@@ -138,13 +138,17 @@ export default function ScreenCapture({ onRecordingComplete, videoRef: externalV
   }
 
   function stop() {
+    // Stop recording first
     recorderRef.current?.stop()
+    
+    // Immediately stop all tracks to prevent feedback
     mediaStreamRef.current?.getTracks().forEach(t => t.stop())
     
     // Clear preview from whichever video element was used
     const preview = externalVideoRef?.current || previewRef.current
     if (preview) {
       preview.srcObject = null
+      preview.pause()
     }
     
     // Stop timer

@@ -20,6 +20,11 @@ contextBridge.exposeInMainWorld('clipforge', {
   getDesktopSources: (opts?: { types?: Array<'screen'|'window'> }) =>
     ipcRenderer.invoke('get-desktop-sources', opts),
   importPaths: (paths: string[]) => ipcRenderer.invoke('import-paths', paths),
+  aiSummarize: (args: {
+    parts: Array<{ inputPath: string; tIn: number; tOut: number }>,
+    targetRatio: number,
+    model?: string
+  }) => ipcRenderer.invoke('ai-summarize', args),
 })
 
 declare global {
@@ -37,6 +42,11 @@ declare global {
         id: string; name: string; thumbnail: string | null
       }>>
       importPaths: (paths: string[]) => Promise<string[]>
+      aiSummarize: (args: {
+        parts: Array<{ inputPath: string; tIn: number; tOut: number }>,
+        targetRatio: number,
+        model?: string
+      }) => Promise<{ saved: boolean; path?: string }>
     }
   }
 }
