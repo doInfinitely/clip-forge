@@ -7539,7 +7539,7 @@ ipcMain.handle("ai-summarize", async (_evt, args) => {
       const out = path$2.join(exportTmpDir, `seg_${i}.mp4`);
       console.log(`[AI Summarize] Encoding segment ${i + 1}/${toExport.length}: ${(p.tOut - p.tIn).toFixed(2)}s from ${path$2.basename(p.inputPath)}`);
       const duration = p.tOut - p.tIn;
-      const ffArgs = [
+      const fastArgs = [
         "-i",
         p.inputPath,
         "-ss",
@@ -7549,9 +7549,25 @@ ipcMain.handle("ai-summarize", async (_evt, args) => {
         "-avoid_negative_ts",
         "make_zero",
         // Reset timestamps to zero
+        "-c",
+        "copy",
+        // Stream copy (no re-encoding)
+        "-movflags",
+        "+faststart",
+        "-y",
+        out
+      ];
+      const slowArgs = [
+        "-i",
+        p.inputPath,
+        "-ss",
+        String(p.tIn),
+        "-t",
+        String(duration),
+        "-avoid_negative_ts",
+        "make_zero",
         "-fflags",
         "+genpts",
-        // Regenerate presentation timestamps
         "-c:v",
         "libx264",
         "-preset",
@@ -7564,23 +7580,32 @@ ipcMain.handle("ai-summarize", async (_evt, args) => {
         "192k",
         "-af",
         "aresample=async=1",
-        // Audio sync
         "-vsync",
         "cfr",
-        // Constant frame rate
         "-r",
         "30",
-        // Force 30fps for consistency
         "-movflags",
         "+faststart",
         "-y",
         out
       ];
-      await new Promise((resolve, reject) => {
-        const proc = spawn(ffmpegPath, ffArgs, { stdio: ["ignore", "ignore", "pipe"] });
-        proc.on("error", reject);
-        proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`trim exit ${code}`)));
-      });
+      let success = false;
+      try {
+        await new Promise((resolve, reject) => {
+          const proc = spawn(ffmpegPath, fastArgs, { stdio: ["ignore", "ignore", "pipe"] });
+          proc.on("error", reject);
+          proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`fast mode failed`)));
+        });
+        success = true;
+        if (i === 0) console.log(`[AI Summarize] Using FAST mode (stream copy) for segments`);
+      } catch (fastErr) {
+        if (i === 0) console.log(`[AI Summarize] Fast mode failed, using re-encode mode for all segments`);
+        await new Promise((resolve, reject) => {
+          const proc = spawn(ffmpegPath, slowArgs, { stdio: ["ignore", "ignore", "pipe"] });
+          proc.on("error", reject);
+          proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`re-encode exit ${code}`)));
+        });
+      }
       segmentOuts.push(out);
     }
     console.log(`[AI Summarize] Creating concat list with ${segmentOuts.length} segments...`);
@@ -7593,77 +7618,116 @@ ${listLines.slice(0, 5).join("\n")}
 ... (${listLines.length - 10} more) ...
 ${listLines.slice(-5).join("\n")}`);
     const finalPath = path$2.join(exportTmpDir, `summary_${Date.now()}.mp4`);
-    console.log(`[AI Summarize] Concatenating ${segmentOuts.length} segments into final video (re-encoding for proper A/V sync)...`);
+    console.log(`[AI Summarize] Concatenating ${segmentOuts.length} segments...`);
     const uniqueSegs = new Set(segmentOuts);
     if (uniqueSegs.size !== segmentOuts.length) {
       console.log(`[AI Summarize] ⚠️ WARNING: Duplicate segments detected! ${segmentOuts.length} segments, ${uniqueSegs.size} unique`);
     }
-    await new Promise((resolve, reject) => {
-      const args2 = [
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        listPath,
-        "-avoid_negative_ts",
-        "make_zero",
-        // Reset timestamps
-        "-fflags",
-        "+genpts",
-        // Regenerate PTS
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "20",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-af",
-        "aresample=async=1",
-        // Audio sync
-        "-vsync",
-        "cfr",
-        // Constant frame rate
-        "-r",
-        "30",
-        // Force 30fps
-        "-max_muxing_queue_size",
-        "1024",
-        // Prevent dropped frames
-        "-movflags",
-        "+faststart",
-        "-y",
-        finalPath
-      ];
-      let stderrData = "";
-      const proc = spawn(ffmpegPath, args2, { stdio: ["ignore", "ignore", "pipe"] });
-      proc.stderr?.on("data", (chunk) => {
-        stderrData += chunk.toString();
-      });
-      proc.on("error", reject);
-      proc.on("close", (code) => {
-        if (code !== 0) {
-          console.log(`[AI Summarize] FFmpeg concat stderr (last 500 chars):
-${stderrData.slice(-500)}`);
-          reject(new Error(`concat exit ${code}`));
-        } else {
-          const allMatches = Array.from(stderrData.matchAll(/time=(\d{2}):(\d{2}):(\d{2}\.\d{2})/g));
-          if (allMatches.length > 0) {
-            const lastMatch = allMatches[allMatches.length - 1];
-            const hours = parseInt(lastMatch[1]);
-            const mins = parseInt(lastMatch[2]);
-            const secs = parseFloat(lastMatch[3]);
-            const totalSecs = hours * 3600 + mins * 60 + secs;
-            console.log(`[AI Summarize] FFmpeg reported duration: ${totalSecs.toFixed(2)}s (from ${allMatches.length} progress updates)`);
+    const fastConcatArgs = [
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listPath,
+      "-c",
+      "copy",
+      "-movflags",
+      "+faststart",
+      "-y",
+      finalPath
+    ];
+    const slowConcatArgs = [
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listPath,
+      "-avoid_negative_ts",
+      "make_zero",
+      "-fflags",
+      "+genpts",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "medium",
+      "-crf",
+      "20",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-af",
+      "aresample=async=1",
+      "-vsync",
+      "cfr",
+      "-r",
+      "30",
+      "-max_muxing_queue_size",
+      "1024",
+      "-movflags",
+      "+faststart",
+      "-y",
+      finalPath
+    ];
+    let concatSuccess = false;
+    try {
+      console.log(`[AI Summarize] Trying FAST concat (stream copy)...`);
+      await new Promise((resolve, reject) => {
+        let stderrData = "";
+        const proc = spawn(ffmpegPath, fastConcatArgs, { stdio: ["ignore", "ignore", "pipe"] });
+        proc.stderr?.on("data", (chunk) => {
+          stderrData += chunk.toString();
+        });
+        proc.on("error", reject);
+        proc.on("close", (code) => {
+          if (code !== 0) {
+            reject(new Error(`fast concat failed`));
+          } else {
+            const allMatches = Array.from(stderrData.matchAll(/time=(\d{2}):(\d{2}):(\d{2}\.\d{2})/g));
+            if (allMatches.length > 0) {
+              const lastMatch = allMatches[allMatches.length - 1];
+              const hours = parseInt(lastMatch[1]);
+              const mins = parseInt(lastMatch[2]);
+              const secs = parseFloat(lastMatch[3]);
+              const totalSecs = hours * 3600 + mins * 60 + secs;
+              console.log(`[AI Summarize] FAST concat succeeded! Duration: ${totalSecs.toFixed(2)}s`);
+            }
+            resolve();
           }
-          resolve();
-        }
+        });
       });
-    });
+      concatSuccess = true;
+    } catch (fastConcatErr) {
+      console.log(`[AI Summarize] Fast concat failed, re-encoding for A/V sync...`);
+      await new Promise((resolve, reject) => {
+        let stderrData = "";
+        const proc = spawn(ffmpegPath, slowConcatArgs, { stdio: ["ignore", "ignore", "pipe"] });
+        proc.stderr?.on("data", (chunk) => {
+          stderrData += chunk.toString();
+        });
+        proc.on("error", reject);
+        proc.on("close", (code) => {
+          if (code !== 0) {
+            console.log(`[AI Summarize] FFmpeg concat stderr (last 500 chars):
+${stderrData.slice(-500)}`);
+            reject(new Error(`concat exit ${code}`));
+          } else {
+            const allMatches = Array.from(stderrData.matchAll(/time=(\d{2}):(\d{2}):(\d{2}\.\d{2})/g));
+            if (allMatches.length > 0) {
+              const lastMatch = allMatches[allMatches.length - 1];
+              const hours = parseInt(lastMatch[1]);
+              const mins = parseInt(lastMatch[2]);
+              const secs = parseFloat(lastMatch[3]);
+              const totalSecs = hours * 3600 + mins * 60 + secs;
+              console.log(`[AI Summarize] Re-encode concat completed. Duration: ${totalSecs.toFixed(2)}s (from ${allMatches.length} progress updates)`);
+            }
+            resolve();
+          }
+        });
+      });
+    }
     const finalBytes = await fs$1.readFile(finalPath);
     console.log(`[AI Summarize] Final video size: ${(finalBytes.length / 1024 / 1024).toFixed(2)} MB`);
     for (const p of [...audioPaths, ...segmentOuts, listPath, finalPath]) {
@@ -7754,7 +7818,8 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
     const p = parts[i];
     const out = path$2.join(tmpDir, `seg_${i}.mp4`);
     const duration = p.tOut - p.tIn;
-    const baseArgs = [
+    const mustReencode = targetHeight > 0;
+    const fastArgs = [
       "-i",
       p.inputPath,
       "-ss",
@@ -7763,30 +7828,14 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
       String(duration),
       "-avoid_negative_ts",
       "make_zero",
-      "-fflags",
-      "+genpts",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      String(reencodeCRF),
-      "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
-      "-af",
-      "aresample=async=1",
-      "-vsync",
-      "cfr",
-      "-r",
-      "30",
+      "-c",
+      "copy",
       "-movflags",
       "+faststart",
       "-y",
       out
     ];
-    const ffArgs = targetHeight > 0 ? [
+    const slowArgs = targetHeight > 0 ? [
       "-i",
       p.inputPath,
       "-ss",
@@ -7819,9 +7868,54 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
       "+faststart",
       "-y",
       out
-    ] : baseArgs;
+    ] : [
+      "-i",
+      p.inputPath,
+      "-ss",
+      String(p.tIn),
+      "-t",
+      String(duration),
+      "-avoid_negative_ts",
+      "make_zero",
+      "-fflags",
+      "+genpts",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      String(reencodeCRF),
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-af",
+      "aresample=async=1",
+      "-vsync",
+      "cfr",
+      "-r",
+      "30",
+      "-movflags",
+      "+faststart",
+      "-y",
+      out
+    ];
+    if (!mustReencode) {
+      try {
+        await new Promise((resolve, reject) => {
+          const proc = spawn(ffmpegPath, fastArgs, { stdio: ["ignore", "ignore", "pipe"] });
+          proc.on("error", reject);
+          proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`fast mode failed`)));
+        });
+        if (i === 0) console.log(`[Export] Using FAST mode (stream copy) for segments`);
+        outs.push(out);
+        continue;
+      } catch (fastErr) {
+        if (i === 0) console.log(`[Export] Fast mode failed, using re-encode mode for all segments`);
+      }
+    }
     await new Promise((resolve, reject) => {
-      const proc = spawn(ffmpegPath, ffArgs, { stdio: ["ignore", "ignore", "pipe"] });
+      const proc = spawn(ffmpegPath, slowArgs, { stdio: ["ignore", "ignore", "pipe"] });
       let stderrData = "";
       proc.stderr?.on("data", (chunk) => {
         stderrData += chunk.toString();
@@ -7841,48 +7935,74 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
   const body = outs.map((o) => `file '${o.replace(/'/g, "'\\''")}'`).join("\n");
   await fs$1.writeFile(listPath, body);
   const finalPath = path$2.join(tmpDir, `final_${Date.now()}.mp4`);
-  await new Promise((resolve, reject) => {
-    const args2 = [
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      listPath,
-      "-avoid_negative_ts",
-      "make_zero",
-      "-fflags",
-      "+genpts",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "medium",
-      "-crf",
-      String(reencodeCRF),
-      "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
-      "-af",
-      "aresample=async=1",
-      "-vsync",
-      "cfr",
-      "-r",
-      "30",
-      "-max_muxing_queue_size",
-      "1024",
-      "-movflags",
-      "+faststart",
-      "-y",
-      finalPath
-    ];
-    const proc = spawn(ffmpegPath, args2, { stdio: ["ignore", "ignore", "pipe"] });
-    proc.stderr?.on("data", (chunk) => {
-      win?.webContents.send("ffmpeg-progress", `Concatenating: ${chunk.toString().trim()}`);
+  const fastConcatArgs = [
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    listPath,
+    "-c",
+    "copy",
+    "-movflags",
+    "+faststart",
+    "-y",
+    finalPath
+  ];
+  const slowConcatArgs = [
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    listPath,
+    "-avoid_negative_ts",
+    "make_zero",
+    "-fflags",
+    "+genpts",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    String(reencodeCRF),
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-af",
+    "aresample=async=1",
+    "-vsync",
+    "cfr",
+    "-r",
+    "30",
+    "-max_muxing_queue_size",
+    "1024",
+    "-movflags",
+    "+faststart",
+    "-y",
+    finalPath
+  ];
+  try {
+    await new Promise((resolve, reject) => {
+      const proc = spawn(ffmpegPath, fastConcatArgs, { stdio: ["ignore", "ignore", "pipe"] });
+      proc.stderr?.on("data", (chunk) => {
+        win?.webContents.send("ffmpeg-progress", `Concatenating (fast): ${chunk.toString().trim()}`);
+      });
+      proc.on("error", reject);
+      proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`fast concat failed`)));
     });
-    proc.on("error", reject);
-    proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`concat exit ${code}`)));
-  });
+  } catch (fastErr) {
+    console.log("[Export] Fast concat failed, re-encoding...");
+    await new Promise((resolve, reject) => {
+      const proc = spawn(ffmpegPath, slowConcatArgs, { stdio: ["ignore", "ignore", "pipe"] });
+      proc.stderr?.on("data", (chunk) => {
+        win?.webContents.send("ffmpeg-progress", `Concatenating (re-encode): ${chunk.toString().trim()}`);
+      });
+      proc.on("error", reject);
+      proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`concat exit ${code}`)));
+    });
+  }
   const bytes = await fs$1.readFile(finalPath);
   outs.forEach((p) => fs$1.unlink(p).catch(() => {
   }));
