@@ -29,7 +29,7 @@ const CLIP_H = 56
 const CLIP_Y = (TL_HEIGHT - CLIP_H) / 2
 const HANDLE_W = 6
 const MIN_LEN = 0.05
-const MIN_PX  = 24
+const MIN_PX  = 24 // Keep large enough for interaction with handles
 const SNAP_THRESHOLD = 0.1 // snap within 0.1s
 
 export default function TimelineCanvas({
@@ -153,7 +153,8 @@ export default function TimelineCanvas({
         {/* clips */}
         {spans.blocks.map((b) => {
           const x = 40 + b.start * pxPerSec
-          const w = Math.max(MIN_PX, b.len * pxPerSec)
+          const actualW = b.len * pxPerSec
+          const w = Math.max(MIN_PX, actualW)
           const isSel = b.id === selectedId
           const c = b.clip
 

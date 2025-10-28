@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, desktopCapturer } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
@@ -86,6 +86,31 @@ ipcMain.handle("save-bytes", async (_evt, opts) => {
 ipcMain.handle("read-file-bytes", async (_evt, absPath) => {
   const buf = await fs.readFile(absPath);
   return new Uint8Array(buf);
+});
+ipcMain.handle("project-save", async (_evt, data) => {
+  const p = path.join(app.getPath("userData"), "last_project.json");
+  await fs.writeFile(p, JSON.stringify(data));
+  return p;
+});
+ipcMain.handle("project-load", async () => {
+  const p = path.join(app.getPath("userData"), "last_project.json");
+  try {
+    const buf = await fs.readFile(p, "utf8");
+    return JSON.parse(buf);
+  } catch {
+    return null;
+  }
+});
+ipcMain.handle("get-desktop-sources", async (_evt, opts) => {
+  const sources = await desktopCapturer.getSources({
+    types: opts?.types ?? ["screen", "window"],
+    thumbnailSize: { width: 320, height: 200 }
+  });
+  return sources.map((s) => ({
+    id: s.id,
+    name: s.name,
+    thumbnail: s.thumbnail?.toDataURL() ?? null
+  }));
 });
 ipcMain.handle("ffmpeg-trim", async (_evt, args) => {
   const { inputPath, tIn, tOut, reencode = true } = args;

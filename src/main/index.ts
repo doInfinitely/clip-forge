@@ -1,5 +1,5 @@
 // src/main/index.ts
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, desktopCapturer } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
@@ -104,6 +104,34 @@ ipcMain.handle('save-bytes', async (_evt, opts: { defaultName: string, bytes: Ui
 ipcMain.handle('read-file-bytes', async (_evt, absPath: string) => {
   const buf = await fs.readFile(absPath)
   return new Uint8Array(buf)
+})
+
+// Autosave project
+ipcMain.handle('project-save', async (_evt, data: any) => {
+  const p = path.join(app.getPath('userData'), 'last_project.json')
+  await fs.writeFile(p, JSON.stringify(data))
+  return p
+})
+
+ipcMain.handle('project-load', async () => {
+  const p = path.join(app.getPath('userData'), 'last_project.json')
+  try {
+    const buf = await fs.readFile(p, 'utf8')
+    return JSON.parse(buf)
+  } catch { return null }
+})
+
+// Get desktop sources for screen recording
+ipcMain.handle('get-desktop-sources', async (_evt, opts?: { types?: Array<'screen'|'window'> }) => {
+  const sources = await desktopCapturer.getSources({
+    types: opts?.types ?? ['screen', 'window'],
+    thumbnailSize: { width: 320, height: 200 }
+  })
+  return sources.map(s => ({
+    id: s.id,
+    name: s.name,
+    thumbnail: s.thumbnail?.toDataURL() ?? null,
+  }))
 })
 
 // Trim a clip using native FFmpeg (ffmpeg-static)

@@ -8,5 +8,8 @@ contextBridge.exposeInMainWorld("clipforge", {
   exportTimeline: (parts, crf) => ipcRenderer.invoke("ffmpeg-export-timeline", { parts, reencodeCRF: crf }),
   onFFmpegProgress: (callback) => {
     ipcRenderer.on("ffmpeg-progress", (_evt, message) => callback(message));
-  }
+  },
+  projectSave: (data) => ipcRenderer.invoke("project-save", data),
+  projectLoad: () => ipcRenderer.invoke("project-load"),
+  getDesktopSources: (opts) => ipcRenderer.invoke("get-desktop-sources", opts)
 });

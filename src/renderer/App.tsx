@@ -1,6 +1,7 @@
 // src/renderer/App.tsx
 import React, { useEffect, useRef, useState } from 'react'
 import TimelineCanvas, { Clip } from './components/TimelineCanvas'
+import ScreenCapture from './components/ScreenCapture'
 import { nanoid } from 'nanoid'
 
 type Mime = 'video/mp4' | 'video/quicktime' | 'video/webm' | 'video/x-matroska'
@@ -9,7 +10,8 @@ const mimeFor = (p: string): Mime => {
   if (ext === 'mp4') return 'video/mp4'
   if (ext === 'mov') return 'video/quicktime'
   if (ext === 'webm') return 'video/webm'
-  return 'video/x-matroska'
+  if (ext === 'mkv') return 'video/x-matroska'
+  return 'video/webm' // default to webm for recordings
 }
 
 // simple distinct colors
@@ -32,6 +34,7 @@ export default function App() {
 
   // absolute playhead time across the sequence
   const [absTime, setAbsTime] = useState(0)
+  const [isRecording, setIsRecording] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const lastBlobUrlRef = useRef<string | null>(null)
@@ -57,10 +60,36 @@ export default function App() {
     }
   }, [])
 
+  // Load project on mount
+  useEffect(() => {
+    // @ts-expect-error preload
+    if (window.clipforge?.projectLoad) {
+      // @ts-expect-error preload
+      window.clipforge.projectLoad()?.then((p: any) => {
+        if (p?.clips) setClips(p.clips)
+        if (p?.pxPerSec) setPxPerSec(p.pxPerSec)
+      })
+    }
+  }, [])
+
   // Save zoom level to localStorage
   useEffect(() => {
     localStorage.setItem('clipforge_pxPerSec', String(pxPerSec))
   }, [pxPerSec])
+
+  // Autosave project when clips or zoom changes
+  useEffect(() => {
+    const payload = { clips, pxPerSec }
+    // best-effort debounce-ish save
+    const t = setTimeout(() => {
+      // @ts-expect-error preload
+      if (window.clipforge?.projectSave) {
+        // @ts-expect-error preload
+        window.clipforge.projectSave(payload)
+      }
+    }, 400)
+    return () => clearTimeout(t)
+  }, [clips, pxPerSec])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -275,23 +304,108 @@ export default function App() {
   }
 
   // Probe duration by reading bytes and loading a blob URL
-  const probeDuration = async (path: string) => {
+  const probeDuration = async (path: string): Promise<number> => {
     try {
+      console.log('[probeDuration] Reading file:', path)
       // @ts-expect-error preload
       const bytes: Uint8Array = await window.clipforge.readFileBytes(path)
+      console.log('[probeDuration] Read', bytes.length, 'bytes')
+      
       const blob = new Blob([bytes], { type: mimeFor(path) })
       const url = URL.createObjectURL(blob)
       const v = document.createElement('video')
       v.preload = 'metadata'
+      
       return await new Promise<number>((resolve) => {
-        const cleanup = () => { URL.revokeObjectURL(url) }
-        v.onloadedmetadata = () => { const d = Number(v.duration); cleanup(); resolve(Number.isFinite(d) ? d : 0) }
-        v.onerror = () => { cleanup(); resolve(0) }
+        let resolved = false
+        const cleanup = () => { 
+          if (!resolved) {
+            resolved = true
+            URL.revokeObjectURL(url)
+          }
+        }
+        
+        // Timeout after 10 seconds
+        const timeout = setTimeout(() => {
+          console.warn('[probeDuration] Timeout for', path)
+          cleanup()
+          resolve(0)
+        }, 10000)
+        
+        v.onloadedmetadata = () => { 
+          clearTimeout(timeout)
+          const d = Number(v.duration)
+          console.log('[probeDuration] Duration:', d, 'for', path)
+          cleanup()
+          resolve(Number.isFinite(d) && d > 0 ? d : 0)
+        }
+        
+        v.onerror = (e) => { 
+          clearTimeout(timeout)
+          console.error('[probeDuration] Error loading:', e)
+          cleanup()
+          resolve(0)
+        }
+        
         v.src = url
       })
-    } catch {
+    } catch (err) {
+      console.error('[probeDuration] Exception:', err)
       return 0
     }
+  }
+
+  // Handle completed screen recording
+  const handleRecordingComplete = async (filePath: string) => {
+    console.log('[handleRecordingComplete] Processing:', filePath)
+    const id = nanoid(8)
+    const name = (filePath.split(/[\\/]/).pop() || 'recording.webm')
+    const color = COLORS[(clips.length) % COLORS.length]
+
+    // Calculate where new clip will start
+    const currentTotal = sequenceSpans.total
+
+    // Probe duration - wait for file to be fully written and closed
+    console.log('[handleRecordingComplete] Waiting 1s for file to be written...')
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    
+    let duration = await probeDuration(filePath)
+    console.log('[handleRecordingComplete] First probe result:', duration)
+    
+    // If duration probe failed, try again with longer delay
+    if (duration < 0.5) {
+      console.log('[handleRecordingComplete] Duration too small, retrying in 2s...')
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      duration = await probeDuration(filePath)
+      console.log('[handleRecordingComplete] Second probe result:', duration)
+    }
+
+    // If still failed, try one more time
+    if (duration < 0.5) {
+      console.log('[handleRecordingComplete] Still too small, final retry in 2s...')
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      duration = await probeDuration(filePath)
+      console.log('[handleRecordingComplete] Final probe result:', duration)
+    }
+
+    // Ensure minimum duration of 5 seconds if probe failed
+    const finalDuration = duration > 0.5 ? duration : 5
+    console.log('[handleRecordingComplete] Using duration:', finalDuration)
+
+    const next: Clip = {
+      id, name, path: filePath,
+      in: 0,
+      out: finalDuration,
+      duration: finalDuration,
+      color,
+    }
+    
+    console.log('[handleRecordingComplete] Adding clip:', next)
+    setClips(prev => [...prev, next])
+    setSelectedId(id)
+
+    // Set absTime to start of new clip (using the total we calculated before adding)
+    setAbsTime(currentTotal)
   }
 
   // Export selected clip’s In/Out (existing MVP path)
@@ -366,8 +480,25 @@ export default function App() {
   // Delete selected
   const deleteSelected = () => {
     if (!selectedId) return
-    setClips(prev => prev.filter(c => c.id !== selectedId))
+    
+    // Pause video and clear source if deleting the currently playing clip
+    const v = videoRef.current
+    if (v) {
+      v.pause()
+    }
+    
+    const newClips = clips.filter(c => c.id !== selectedId)
+    setClips(newClips)
     setSelectedId(null)
+    
+    // If no clips left, clear the video
+    if (newClips.length === 0) {
+      if (src) {
+        URL.revokeObjectURL(src)
+      }
+      setSrc(null)
+      setFileName('')
+    }
   }
 
   // Export timeline (multi-clip)
@@ -410,14 +541,20 @@ export default function App() {
 
       <div className="main">
         <div className="player">
-          {src ? (
-            <video
-              ref={videoRef}
-              src={src}
-              controls
-              style={{}}
-            />
-          ) : (
+          <video
+            ref={videoRef}
+            src={src || undefined}
+            controls
+            autoPlay
+            muted={isRecording}
+            playsInline
+            style={{ 
+              display: src || isRecording ? 'block' : 'none',
+              width: '100%',
+              height: 'auto'
+            }}
+          />
+          {!src && !isRecording && (
             <div style={{ color: '#444', padding: 24 }}>
               <h1>ClipForge</h1>
               <p>Import a video to get started.</p>
@@ -448,6 +585,9 @@ export default function App() {
             />
           </div>
         </div>
+
+        {/* Screen Recorder panel */}
+        <ScreenCapture onRecordingComplete={handleRecordingComplete} videoRef={videoRef} setIsRecording={setIsRecording} />
       </div>
       {progress && (
         <div style={{

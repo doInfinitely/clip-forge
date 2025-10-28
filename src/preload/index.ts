@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('clipforge', {
   onFFmpegProgress: (callback: (message: string) => void) => {
     ipcRenderer.on('ffmpeg-progress', (_evt, message) => callback(message))
   },
+  projectSave: (data: any) => ipcRenderer.invoke('project-save', data),
+  projectLoad: () => ipcRenderer.invoke('project-load'),
+  getDesktopSources: (opts?: { types?: Array<'screen'|'window'> }) =>
+    ipcRenderer.invoke('get-desktop-sources', opts),
 })
 
 declare global {
@@ -26,6 +30,11 @@ declare global {
       ffmpegTrim: (inputPath: string, tIn: number, tOut: number, reencode?: boolean) => Promise<Uint8Array>
       exportTimeline: (parts: Array<{inputPath:string; tIn:number; tOut:number}>, crf?: number) => Promise<Uint8Array>
       onFFmpegProgress: (callback: (message: string) => void) => void
+      projectSave: (data: any) => Promise<string>
+      projectLoad: () => Promise<any>
+      getDesktopSources: (opts?: { types?: Array<'screen'|'window'> }) => Promise<Array<{
+        id: string; name: string; thumbnail: string | null
+      }>>
     }
   }
 }
