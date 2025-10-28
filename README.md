@@ -55,6 +55,7 @@ npm run dev
 
 ## Package (local installer)
 ```bash
+npm run build
 npm run dist # creates mac/win artifacts per host OS
 ```
 
