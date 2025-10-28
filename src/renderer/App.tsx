@@ -35,6 +35,7 @@ export default function App() {
   const [fileName, setFileName] = useState<string>('')
   const [working, setWorking] = useState<string>('')
   const [progress, setProgress] = useState<string>('')
+  const [exportProgress, setExportProgress] = useState<{ phase: string; percent: number; current?: number; total?: number } | null>(null)
 
   // timeline data - tracks[0] = Main, tracks[1] = Overlay
   const [tracks, setTracks] = useState<Clip[][]>([[], []])
@@ -57,16 +58,26 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const lastBlobUrlRef = useRef<string | null>(null)
   const playThroughRef = useRef(false)  // when true, auto-play after switching clips
+  const userClickedTimelineRef = useRef(false)  // track if user clicked timeline (don't auto-play)
   const [showSettings, setShowSettings] = useState(false)
   
   // Wrapped setAbsTime that marks it as a user action from timeline
   const setAbsTimeFromUser = (t: number) => {
-    // Pause the video when clicking timeline to prevent auto-play
+    // Mark that user clicked timeline - prevents auto-play
+    userClickedTimelineRef.current = true
+    playThroughRef.current = false  // Cancel any pending auto-play
+    
+    // Pause the video when clicking timeline
     const v = videoRef.current
     if (v && !v.paused) {
       v.pause()
     }
     setAbsTime(t)
+    
+    // Reset the flag after a short delay
+    setTimeout(() => {
+      userClickedTimelineRef.current = false
+    }, 500)
   }
 
   // Listen to FFmpeg progress updates
@@ -76,6 +87,17 @@ export default function App() {
       // @ts-expect-error preload
       window.clipforge.onFFmpegProgress((message: string) => {
         setProgress(message)
+      })
+    }
+  }, [])
+  
+  // Listen to Export progress updates
+  useEffect(() => {
+    // @ts-expect-error preload
+    if (window.clipforge?.onExportProgress) {
+      // @ts-expect-error preload
+      window.clipforge.onExportProgress((data: { phase: string; percent: number; current?: number; total?: number }) => {
+        setExportProgress(data)
       })
     }
   }, [])
@@ -295,6 +317,9 @@ export default function App() {
   useEffect(() => {
     const v = videoRef.current
     if (!v || !selectedClip || !src) return
+
+    // Don't auto-play if user clicked timeline
+    if (userClickedTimelineRef.current) return
 
     // Only auto-play if we explicitly set playThroughRef (during auto-advance)
     if (playThroughRef.current) {
@@ -814,6 +839,7 @@ export default function App() {
     if (!tracks[activeTrack].length) return
     setWorking('Rendering timeline…')
     setProgress('')
+    setExportProgress({ phase: 'starting', percent: 0 })
     try {
       const parts = sequenceSpans.arr.map(b => ({
         inputPath: b.clip.path,
@@ -832,13 +858,13 @@ export default function App() {
       // @ts-expect-error preload
       const res = await window.clipforge.saveBytes(suggested, bytes)
       setWorking(res.saved ? 'Exported ✅' : 'Canceled')
-      setProgress('')
+      setExportProgress(null)
     } catch (e) {
       console.error(e)
       setWorking('Export failed ❌')
-      setProgress('')
+      setExportProgress(null)
     } finally {
-      setTimeout(() => { setWorking(''); setProgress('') }, 1500)
+      setTimeout(() => { setWorking(''); setExportProgress(null) }, 1500)
     }
   }
 
@@ -960,6 +986,56 @@ export default function App() {
         </div>
         
         <span className="meta">{working}</span>
+        
+        {/* Export Progress Bar */}
+        {exportProgress && (
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 10,
+            marginLeft: 20,
+            fontSize: 12
+          }}>
+            <div style={{ 
+              width: 200, 
+              height: 20, 
+              background: '#e5e7eb', 
+              borderRadius: 10,
+              overflow: 'hidden',
+              position: 'relative'
+            }}>
+              <div style={{ 
+                width: `${exportProgress.percent}%`, 
+                height: '100%', 
+                background: exportProgress.phase === 'encoding' ? '#3b82f6' : '#10b981',
+                transition: 'width 0.3s ease',
+                borderRadius: 10
+              }} />
+              <div style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: exportProgress.percent > 50 ? 'white' : '#374151',
+                fontWeight: 'bold',
+                fontSize: 11
+              }}>
+                {exportProgress.percent}%
+              </div>
+            </div>
+            <span style={{ color: '#6b7280', fontSize: 11 }}>
+              {exportProgress.phase === 'encoding' && exportProgress.current && exportProgress.total 
+                ? `Encoding ${exportProgress.current}/${exportProgress.total}` 
+                : exportProgress.phase === 'concatenating' 
+                ? 'Finalizing...' 
+                : 'Starting...'}
+            </span>
+          </div>
+        )}
       </div>
       
       {/* Settings Modal */}

@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('clipforge', {
   onFFmpegProgress: (callback: (message: string) => void) => {
     ipcRenderer.on('ffmpeg-progress', (_evt, message) => callback(message))
   },
+  onExportProgress: (callback: (data: { phase: string; percent: number; current?: number; total?: number }) => void) => {
+    ipcRenderer.on('export-progress', (_evt, data) => callback(data))
+  },
   projectSave: (data: any) => ipcRenderer.invoke('project-save', data),
   projectLoad: () => ipcRenderer.invoke('project-load'),
   settingsSave: (settings: { openaiApiKey?: string }) => ipcRenderer.invoke('settings-save', settings),
@@ -39,6 +42,7 @@ declare global {
       ffmpegTrim: (inputPath: string, tIn: number, tOut: number, reencode?: boolean) => Promise<Uint8Array>
       exportTimeline: (parts: Array<{inputPath:string; tIn:number; tOut:number}>, crf?: number, targetHeight?: number) => Promise<Uint8Array>
       onFFmpegProgress: (callback: (message: string) => void) => void
+      onExportProgress: (callback: (data: { phase: string; percent: number; current?: number; total?: number }) => void) => void
       projectSave: (data: any) => Promise<string>
       projectLoad: () => Promise<any>
       settingsSave: (settings: { openaiApiKey?: string }) => Promise<boolean>

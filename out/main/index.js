@@ -7986,6 +7986,10 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
   const tmpDir = await fs$1.mkdtemp(path$2.join(os$1.tmpdir(), "clipforge_"));
   const outs = [];
   console.log(`[Export] Re-encoding ${parts.length} segments for proper sync and concatenation...`);
+  const totalDuration = parts.reduce((sum, p) => sum + (p.tOut - p.tIn), 0);
+  let processedDuration = 0;
+  console.log(`[Export] Total duration to encode: ${totalDuration.toFixed(2)}s`);
+  win?.webContents.send("export-progress", { phase: "encoding", percent: 0, current: 0, total: parts.length });
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     const out = path$2.join(tmpDir, `seg_${i}.mp4`);
@@ -8045,12 +8049,31 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
     await new Promise((resolve, reject) => {
       const proc = spawn(ffmpegPath, ffArgs, { stdio: ["ignore", "ignore", "pipe"] });
       let stderrData = "";
+      let lastUpdatePercent = -1;
       proc.stderr?.on("data", (chunk) => {
-        stderrData += chunk.toString();
-        const lines = stderrData.split("\n");
-        for (const line of lines) {
-          if (line.includes("frame=") || line.includes("time=")) {
-            win?.webContents.send("ffmpeg-progress", `Segment ${i + 1}/${parts.length}: ${line.trim()}`);
+        const chunkStr = chunk.toString();
+        stderrData += chunkStr;
+        const lines = chunkStr.split("\n");
+        for (let line of lines) {
+          const timeMatch = line.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d{2})/);
+          if (timeMatch) {
+            const hours = parseInt(timeMatch[1]);
+            const mins = parseInt(timeMatch[2]);
+            const secs = parseFloat(timeMatch[3]);
+            const currentSegTime = hours * 3600 + mins * 60 + secs;
+            const segmentProgress = Math.min(currentSegTime / duration, 1);
+            const overallProgress = (processedDuration + segmentProgress * duration) / totalDuration;
+            const percentComplete = Math.min(Math.round(overallProgress * 100), 99);
+            if (percentComplete !== lastUpdatePercent) {
+              lastUpdatePercent = percentComplete;
+              win?.webContents.send("export-progress", {
+                phase: "encoding",
+                percent: percentComplete,
+                current: i + 1,
+                total: parts.length
+              });
+            }
+            break;
           }
         }
       });
@@ -8060,6 +8083,14 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
       });
       proc.on("close", (code) => {
         if (code === 0) {
+          processedDuration += duration;
+          const percentComplete = Math.min(Math.round(processedDuration / totalDuration * 100), 99);
+          win?.webContents.send("export-progress", {
+            phase: "encoding",
+            percent: percentComplete,
+            current: i + 1,
+            total: parts.length
+          });
           resolve();
         } else {
           console.error(`[Export] FFmpeg segment ${i + 1} failed with code ${code}`);
@@ -8070,11 +8101,13 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
     });
     outs.push(out);
   }
+  win?.webContents.send("export-progress", { phase: "encoding", percent: 100, current: parts.length, total: parts.length });
   const listPath = path$2.join(tmpDir, "list.txt");
   const body = outs.map((o) => `file '${o.replace(/'/g, "'\\''")}'`).join("\n");
   await fs$1.writeFile(listPath, body);
   const finalPath = path$2.join(tmpDir, `final_${Date.now()}.mp4`);
   console.log(`[Export] Concatenating ${outs.length} unified segments...`);
+  win?.webContents.send("export-progress", { phase: "concatenating", percent: 0 });
   const concatArgs = [
     "-f",
     "concat",
@@ -8095,7 +8128,7 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
     let stderrData = "";
     proc.stderr?.on("data", (chunk) => {
       stderrData += chunk.toString();
-      win?.webContents.send("ffmpeg-progress", `Concatenating: ${stderrData.split("\n").slice(-2)[0]}`);
+      win?.webContents.send("export-progress", { phase: "concatenating", percent: 50 });
     });
     proc.on("error", (err) => {
       console.error("[Export] Concat error:", err);
@@ -8104,6 +8137,7 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
     proc.on("close", (code) => {
       if (code === 0) {
         console.log("[Export] ✅ Concatenation complete");
+        win?.webContents.send("export-progress", { phase: "concatenating", percent: 100 });
         resolve();
       } else {
         console.error("[Export] ❌ Concat failed with code:", code);

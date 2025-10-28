@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld("clipforge", {
   onFFmpegProgress: (callback) => {
     ipcRenderer.on("ffmpeg-progress", (_evt, message) => callback(message));
   },
+  onExportProgress: (callback) => {
+    ipcRenderer.on("export-progress", (_evt, data) => callback(data));
+  },
   projectSave: (data) => ipcRenderer.invoke("project-save", data),
   projectLoad: () => ipcRenderer.invoke("project-load"),
   settingsSave: (settings) => ipcRenderer.invoke("settings-save", settings),

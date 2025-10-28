@@ -25159,6 +25159,7 @@ function App() {
   const [fileName, setFileName] = reactExports.useState("");
   const [working, setWorking] = reactExports.useState("");
   const [progress, setProgress] = reactExports.useState("");
+  const [exportProgress, setExportProgress] = reactExports.useState(null);
   const [tracks, setTracks] = reactExports.useState([[], []]);
   const [activeTrack, setActiveTrack] = reactExports.useState(0);
   const [selected, setSelected] = reactExports.useState(null);
@@ -25173,18 +25174,31 @@ function App() {
   const videoRef = reactExports.useRef(null);
   const lastBlobUrlRef = reactExports.useRef(null);
   const playThroughRef = reactExports.useRef(false);
+  const userClickedTimelineRef = reactExports.useRef(false);
   const [showSettings, setShowSettings] = reactExports.useState(false);
   const setAbsTimeFromUser = (t2) => {
+    userClickedTimelineRef.current = true;
+    playThroughRef.current = false;
     const v2 = videoRef.current;
     if (v2 && !v2.paused) {
       v2.pause();
     }
     setAbsTime(t2);
+    setTimeout(() => {
+      userClickedTimelineRef.current = false;
+    }, 500);
   };
   reactExports.useEffect(() => {
     if (window.clipforge?.onFFmpegProgress) {
       window.clipforge.onFFmpegProgress((message) => {
         setProgress(message);
+      });
+    }
+  }, []);
+  reactExports.useEffect(() => {
+    if (window.clipforge?.onExportProgress) {
+      window.clipforge.onExportProgress((data) => {
+        setExportProgress(data);
       });
     }
   }, []);
@@ -25357,6 +25371,7 @@ function App() {
   reactExports.useEffect(() => {
     const v2 = videoRef.current;
     if (!v2 || !selectedClip || !src) return;
+    if (userClickedTimelineRef.current) return;
     if (playThroughRef.current) {
       playThroughRef.current = false;
       const attemptPlay = () => {
@@ -25777,6 +25792,7 @@ function App() {
     if (!tracks[activeTrack].length) return;
     setWorking("Rendering timeline…");
     setProgress("");
+    setExportProgress({ phase: "starting", percent: 0 });
     try {
       const parts = sequenceSpans.arr.map((b) => ({
         inputPath: b.clip.path,
@@ -25788,15 +25804,15 @@ function App() {
       const suggested = "timeline_export.mp4";
       const res = await window.clipforge.saveBytes(suggested, bytes);
       setWorking(res.saved ? "Exported ✅" : "Canceled");
-      setProgress("");
+      setExportProgress(null);
     } catch (e) {
       console.error(e);
       setWorking("Export failed ❌");
-      setProgress("");
+      setExportProgress(null);
     } finally {
       setTimeout(() => {
         setWorking("");
-        setProgress("");
+        setExportProgress(null);
       }, 1500);
     }
   };
@@ -25924,7 +25940,48 @@ function App() {
           }
         )
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "meta", children: working })
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "meta", children: working }),
+      exportProgress && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        marginLeft: 20,
+        fontSize: 12
+      }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
+          width: 200,
+          height: 20,
+          background: "#e5e7eb",
+          borderRadius: 10,
+          overflow: "hidden",
+          position: "relative"
+        }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+            width: `${exportProgress.percent}%`,
+            height: "100%",
+            background: exportProgress.phase === "encoding" ? "#3b82f6" : "#10b981",
+            transition: "width 0.3s ease",
+            borderRadius: 10
+          } }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: exportProgress.percent > 50 ? "white" : "#374151",
+            fontWeight: "bold",
+            fontSize: 11
+          }, children: [
+            exportProgress.percent,
+            "%"
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: "#6b7280", fontSize: 11 }, children: exportProgress.phase === "encoding" && exportProgress.current && exportProgress.total ? `Encoding ${exportProgress.current}/${exportProgress.total}` : exportProgress.phase === "concatenating" ? "Finalizing..." : "Starting..." })
+      ] })
     ] }),
     showSettings && /* @__PURE__ */ jsxRuntimeExports.jsx(Settings, { onClose: () => setShowSettings(false) }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "main", style: {
