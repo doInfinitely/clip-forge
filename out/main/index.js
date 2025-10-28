@@ -6866,6 +6866,19 @@ main.exports = DotenvModule;
 var mainExports = main.exports;
 const dotenv = /* @__PURE__ */ getDefaultExportFromCjs(mainExports);
 dotenv.config();
+async function getOpenAIKey() {
+  if (process.env.OPENAI_API_KEY) {
+    return process.env.OPENAI_API_KEY;
+  }
+  const settingsPath = path$2.join(app.getPath("userData"), "settings.json");
+  try {
+    const data = await fs$1.readFile(settingsPath, "utf8");
+    const settings = JSON.parse(data);
+    return settings.openaiApiKey || null;
+  } catch {
+    return null;
+  }
+}
 const nodeRequire = createRequire(import.meta.url);
 const ffmpegPathRaw = nodeRequire("ffmpeg-static") || "";
 const ffmpegPath = app.isPackaged ? ffmpegPathRaw.replace("app.asar", "app.asar.unpacked") : ffmpegPathRaw;
@@ -6944,6 +6957,20 @@ ipcMain.handle("read-file-bytes", async (_evt, absPath) => {
   const buf = await fs$1.readFile(absPath);
   return new Uint8Array(buf);
 });
+ipcMain.handle("settings-save", async (_evt, settings) => {
+  const settingsPath = path$2.join(app.getPath("userData"), "settings.json");
+  await fs$1.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+  return true;
+});
+ipcMain.handle("settings-load", async () => {
+  const settingsPath = path$2.join(app.getPath("userData"), "settings.json");
+  try {
+    const data = await fs$1.readFile(settingsPath, "utf8");
+    return JSON.parse(data);
+  } catch {
+    return {};
+  }
+});
 ipcMain.handle("project-save", async (_evt, data) => {
   const p = path$2.join(app.getPath("userData"), "last_project.json");
   await fs$1.writeFile(p, JSON.stringify(data));
@@ -6984,12 +7011,13 @@ ipcMain.handle("import-paths", async (_evt, paths) => {
 });
 ipcMain.handle("ai-summarize", async (_evt, args) => {
   const { parts, targetRatio, model } = args;
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY not set. Create a .env file in the project root with your API key.");
+  const apiKey = await getOpenAIKey();
+  if (!apiKey) {
+    throw new Error("OpenAI API key not configured. Please set your API key in Settings (gear icon in top right).");
   }
   if (!parts?.length) throw new Error("No clips provided");
   if (!(targetRatio > 0 && targetRatio < 1)) throw new Error("targetRatio must be between 0 and 1");
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const openai = new OpenAI({ apiKey });
   const tmpDir = await fs$1.mkdtemp(path$2.join(os$1.tmpdir(), "clipforge_ai_"));
   const audioPaths = [];
   const segmentMaps = [];

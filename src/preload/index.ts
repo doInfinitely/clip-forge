@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('clipforge', {
   },
   projectSave: (data: any) => ipcRenderer.invoke('project-save', data),
   projectLoad: () => ipcRenderer.invoke('project-load'),
+  settingsSave: (settings: { openaiApiKey?: string }) => ipcRenderer.invoke('settings-save', settings),
+  settingsLoad: () => ipcRenderer.invoke('settings-load'),
   getDesktopSources: (opts?: { types?: Array<'screen'|'window'> }) =>
     ipcRenderer.invoke('get-desktop-sources', opts),
   importPaths: (paths: string[]) => ipcRenderer.invoke('import-paths', paths),
@@ -38,6 +40,8 @@ declare global {
       onFFmpegProgress: (callback: (message: string) => void) => void
       projectSave: (data: any) => Promise<string>
       projectLoad: () => Promise<any>
+      settingsSave: (settings: { openaiApiKey?: string }) => Promise<boolean>
+      settingsLoad: () => Promise<{ openaiApiKey?: string }>
       getDesktopSources: (opts?: { types?: Array<'screen'|'window'> }) => Promise<Array<{
         id: string; name: string; thumbnail: string | null
       }>>

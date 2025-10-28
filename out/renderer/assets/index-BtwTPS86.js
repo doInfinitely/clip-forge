@@ -24908,6 +24908,174 @@ ${it.duration.toFixed(2)}s${it.width ? ` • ${it.width}×${it.height}` : ""}`,
     )) })
   ] });
 }
+function Settings({ onClose }) {
+  const [apiKey, setApiKey] = reactExports.useState("");
+  const [loading, setLoading] = reactExports.useState(true);
+  const [saving, setSaving] = reactExports.useState(false);
+  const [showKey, setShowKey] = reactExports.useState(false);
+  reactExports.useEffect(() => {
+    window.clipforge?.settingsLoad?.().then((settings) => {
+      if (settings?.openaiApiKey) {
+        setApiKey(settings.openaiApiKey);
+      }
+      setLoading(false);
+    }).catch(() => {
+      setLoading(false);
+    });
+  }, []);
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await window.clipforge.settingsSave({ openaiApiKey: apiKey });
+      alert("Settings saved! Your API key is stored securely on your device.");
+      onClose();
+    } catch (err) {
+      alert(`Failed to save: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: "rgba(0, 0, 0, 0.5)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 9999
+  }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: {
+    background: "white",
+    borderRadius: 12,
+    padding: 24,
+    width: "90%",
+    maxWidth: 500,
+    boxShadow: "0 8px 32px rgba(0, 0, 0, 0.3)"
+  }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { style: { margin: 0, fontSize: 20 }, children: "⚙️ Settings" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          onClick: onClose,
+          style: {
+            background: "transparent",
+            border: "none",
+            fontSize: 24,
+            cursor: "pointer",
+            padding: 4,
+            lineHeight: 1
+          },
+          children: "×"
+        }
+      )
+    ] }),
+    loading ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: 20, textAlign: "center", color: "#666" }, children: "Loading settings..." }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 16 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { style: { display: "block", marginBottom: 8, fontWeight: "bold", fontSize: 14 }, children: "OpenAI API Key" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { position: "relative" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "input",
+            {
+              type: showKey ? "text" : "password",
+              value: apiKey,
+              onChange: (e) => setApiKey(e.target.value),
+              placeholder: "sk-...",
+              style: {
+                width: "100%",
+                padding: "8px 40px 8px 12px",
+                fontSize: 14,
+                border: "1px solid #ddd",
+                borderRadius: 6,
+                fontFamily: "monospace",
+                boxSizing: "border-box"
+              }
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              type: "button",
+              onClick: () => setShowKey(!showKey),
+              style: {
+                position: "absolute",
+                right: 8,
+                top: "50%",
+                transform: "translateY(-50%)",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                fontSize: 18,
+                padding: 4
+              },
+              title: showKey ? "Hide" : "Show",
+              children: showKey ? "🙈" : "👁️"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { fontSize: 12, color: "#666", marginTop: 8 }, children: [
+          "Required for AI Summary feature. Get your key at",
+          " ",
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "a",
+            {
+              href: "https://platform.openai.com/api-keys",
+              target: "_blank",
+              rel: "noopener noreferrer",
+              style: { color: "#2563eb" },
+              children: "platform.openai.com/api-keys"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+          fontSize: 11,
+          color: "#059669",
+          marginTop: 6,
+          padding: 8,
+          background: "#d1fae5",
+          borderRadius: 4
+        }, children: "🔒 Your API key is stored locally on your device and never shared." })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            onClick: onClose,
+            style: {
+              padding: "8px 16px",
+              fontSize: 14,
+              border: "1px solid #ddd",
+              borderRadius: 6,
+              background: "white",
+              cursor: "pointer"
+            },
+            children: "Cancel"
+          }
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            onClick: handleSave,
+            disabled: saving || !apiKey,
+            style: {
+              padding: "8px 16px",
+              fontSize: 14,
+              border: "none",
+              borderRadius: 6,
+              background: apiKey ? "#2563eb" : "#ccc",
+              color: "white",
+              cursor: apiKey ? "pointer" : "not-allowed",
+              fontWeight: "bold"
+            },
+            children: saving ? "Saving..." : "Save Settings"
+          }
+        )
+      ] })
+    ] })
+  ] }) });
+}
 const urlAlphabet = "useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict";
 let nanoid = (size = 21) => {
   let id2 = "";
@@ -24945,6 +25113,7 @@ function App() {
   const videoRef = reactExports.useRef(null);
   const lastBlobUrlRef = reactExports.useRef(null);
   const playThroughRef = reactExports.useRef(false);
+  const [showSettings, setShowSettings] = reactExports.useState(false);
   const setAbsTimeFromUser = (t2) => {
     const v2 = videoRef.current;
     if (v2 && !v2.paused) {
@@ -25674,10 +25843,30 @@ function App() {
             title: "Use AI to create a shorter version with the most important parts",
             children: "✨ Summarize"
           }
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            onClick: () => setShowSettings(true),
+            style: {
+              padding: "6px 12px",
+              fontSize: 18,
+              background: "transparent",
+              color: "#666",
+              border: "1px solid #ddd",
+              borderRadius: 4,
+              cursor: "pointer",
+              lineHeight: 1,
+              marginLeft: 8
+            },
+            title: "Settings",
+            children: "⚙️"
+          }
         )
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "meta", children: working })
     ] }),
+    showSettings && /* @__PURE__ */ jsxRuntimeExports.jsx(Settings, { onClose: () => setShowSettings(false) }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "main", style: {
       display: "grid",
       gridTemplateColumns: "240px 1fr",

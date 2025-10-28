@@ -10,8 +10,26 @@ import { Readable } from 'node:stream'
 import { OpenAI } from 'openai'
 import dotenv from 'dotenv'
 
-// Load environment variables
+// Load environment variables (dev only - .env file won't exist in production)
 dotenv.config()
+
+// Helper to get OpenAI API key from settings or env
+async function getOpenAIKey(): Promise<string | null> {
+  // Try environment variable first (for development)
+  if (process.env.OPENAI_API_KEY) {
+    return process.env.OPENAI_API_KEY
+  }
+  
+  // Try loading from settings file (for production)
+  const settingsPath = path.join(app.getPath('userData'), 'settings.json')
+  try {
+    const data = await fs.readFile(settingsPath, 'utf8')
+    const settings = JSON.parse(data)
+    return settings.openaiApiKey || null
+  } catch {
+    return null
+  }
+}
 
 // ✅ Use a differently named require so we don't redeclare `require`
 const nodeRequire = createRequire(import.meta.url)
@@ -110,6 +128,23 @@ ipcMain.handle('read-file-bytes', async (_evt, absPath: string) => {
   return new Uint8Array(buf)
 })
 
+// Settings management (including OpenAI API key)
+ipcMain.handle('settings-save', async (_evt, settings: { openaiApiKey?: string }) => {
+  const settingsPath = path.join(app.getPath('userData'), 'settings.json')
+  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+})
+
+ipcMain.handle('settings-load', async () => {
+  const settingsPath = path.join(app.getPath('userData'), 'settings.json')
+  try {
+    const data = await fs.readFile(settingsPath, 'utf8')
+    return JSON.parse(data)
+  } catch {
+    return {}
+  }
+})
+
 // Autosave project
 ipcMain.handle('project-save', async (_evt, data: any) => {
   const p = path.join(app.getPath('userData'), 'last_project.json')
@@ -161,13 +196,14 @@ ipcMain.handle('ai-summarize', async (_evt, args: {
   const { parts, targetRatio, model } = args
   
   // Validation
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error('OPENAI_API_KEY not set. Create a .env file in the project root with your API key.')
+  const apiKey = await getOpenAIKey()
+  if (!apiKey) {
+    throw new Error('OpenAI API key not configured. Please set your API key in Settings (gear icon in top right).')
   }
   if (!parts?.length) throw new Error('No clips provided')
   if (!(targetRatio > 0 && targetRatio < 1)) throw new Error('targetRatio must be between 0 and 1')
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  const openai = new OpenAI({ apiKey })
 
   // 1) Extract audio for each part (mono 16k WAV for OpenAI compatibility)
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipforge_ai_'))

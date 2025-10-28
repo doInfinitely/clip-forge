@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import TimelineCanvas, { Clip } from './components/TimelineCanvas'
 import RecordingPanel from './components/RecordingPanel'
 import MediaLibrary from './components/MediaLibrary'
+import Settings from './components/Settings'
 import { nanoid } from 'nanoid'
 
 type LibraryItem = {
@@ -56,6 +57,7 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const lastBlobUrlRef = useRef<string | null>(null)
   const playThroughRef = useRef(false)  // when true, auto-play after switching clips
+  const [showSettings, setShowSettings] = useState(false)
   
   // Wrapped setAbsTime that marks it as a user action from timeline
   const setAbsTimeFromUser = (t: number) => {
@@ -938,10 +940,30 @@ export default function App() {
           >
             ✨ Summarize
           </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            style={{ 
+              padding:'6px 12px', 
+              fontSize:18, 
+              background:'transparent', 
+              color:'#666', 
+              border:'1px solid #ddd', 
+              borderRadius:4, 
+              cursor:'pointer',
+              lineHeight: 1,
+              marginLeft: 8
+            }}
+            title="Settings"
+          >
+            ⚙️
+          </button>
         </div>
         
         <span className="meta">{working}</span>
       </div>
+      
+      {/* Settings Modal */}
+      {showSettings && <Settings onClose={() => setShowSettings(false)} />}
 
       {/* Sidebar + main grid */}
       <div className="main" style={{ 
