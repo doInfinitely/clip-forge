@@ -1,7 +1,7 @@
 // src/renderer/App.tsx
 import React, { useEffect, useRef, useState } from 'react'
 import TimelineCanvas, { Clip } from './components/TimelineCanvas'
-import ScreenCapture from './components/ScreenCapture'
+import RecordingPanel from './components/RecordingPanel'
 import { nanoid } from 'nanoid'
 
 type Mime = 'video/mp4' | 'video/quicktime' | 'video/webm' | 'video/x-matroska'
@@ -586,8 +586,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* Screen Recorder panel */}
-        <ScreenCapture onRecordingComplete={handleRecordingComplete} videoRef={videoRef} setIsRecording={setIsRecording} />
+        {/* Recording Panel (Tabbed) */}
+        <RecordingPanel 
+          onRecordingComplete={handleRecordingComplete}
+          videoRef={videoRef}
+          setIsRecording={setIsRecording}
+        />
       </div>
       {progress && (
         <div style={{

@@ -168,9 +168,8 @@ export default function ScreenCapture({ onRecordingComplete, videoRef: externalV
   }
 
   return (
-    <div style={{ borderTop:'1px solid #eee', padding:'10px', display:'flex', flexDirection:'column', gap:10 }}>
+    <div style={{ padding:'10px', display:'flex', flexDirection:'column', gap:10 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-        <b>Screen Recording</b>
         {chosen && !recording && (
           <button onClick={() => setChosen(null)} style={{ fontSize:11, padding:'2px 8px' }}>
             Change Source
