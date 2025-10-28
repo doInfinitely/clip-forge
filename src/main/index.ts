@@ -179,19 +179,21 @@ ipcMain.handle('ffmpeg-trim', async (_evt, args: {
 // Export timeline (multi-clip)
 ipcMain.handle('ffmpeg-export-timeline', async (_evt, args: {
   parts: Array<{ inputPath: string; tIn: number; tOut: number }>,
-  reencodeCRF?: number
+  reencodeCRF?: number,
+  targetHeight?: number // 0 or undefined => source
 }) => {
-  const { parts, reencodeCRF = 23 } = args
+  const { parts, reencodeCRF = 23, targetHeight = 0 } = args
   if (!parts?.length) throw new Error('No parts')
 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipforge_'))
   const outs: string[] = []
 
-  // 1) trim each segment to unified codec
+  // 1) trim each segment to unified codec (+ optional scale)
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]
     const out = path.join(tmpDir, `seg_${i}.mp4`)
-    const ffArgs = [
+    
+    const baseArgs = [
       '-ss', String(p.tIn),
       '-to', String(p.tOut),
       '-i', p.inputPath,
@@ -200,6 +202,20 @@ ipcMain.handle('ffmpeg-export-timeline', async (_evt, args: {
       '-movflags', '+faststart',
       '-y', out,
     ]
+    
+    // insert scale before output if a target height is chosen
+    const ffArgs = targetHeight > 0
+      ? [
+          '-ss', String(p.tIn),
+          '-to', String(p.tOut),
+          '-i', p.inputPath,
+          '-vf', `scale=-2:${targetHeight}`,
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(reencodeCRF),
+          '-c:a', 'aac',
+          '-movflags', '+faststart',
+          '-y', out,
+        ]
+      : baseArgs
     await new Promise<void>((resolve, reject) => {
       const proc = spawn(ffmpegPath, ffArgs, { stdio: ['ignore', 'ignore', 'pipe'] })
       let stderrData = ''

@@ -161,14 +161,14 @@ ipcMain.handle("ffmpeg-trim", async (_evt, args) => {
   return new Uint8Array(bytes);
 });
 ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
-  const { parts, reencodeCRF = 23 } = args;
+  const { parts, reencodeCRF = 23, targetHeight = 0 } = args;
   if (!parts?.length) throw new Error("No parts");
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "clipforge_"));
   const outs = [];
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     const out = path.join(tmpDir, `seg_${i}.mp4`);
-    const ffArgs = [
+    const baseArgs = [
       "-ss",
       String(p.tIn),
       "-to",
@@ -188,6 +188,28 @@ ipcMain.handle("ffmpeg-export-timeline", async (_evt, args) => {
       "-y",
       out
     ];
+    const ffArgs = targetHeight > 0 ? [
+      "-ss",
+      String(p.tIn),
+      "-to",
+      String(p.tOut),
+      "-i",
+      p.inputPath,
+      "-vf",
+      `scale=-2:${targetHeight}`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      String(reencodeCRF),
+      "-c:a",
+      "aac",
+      "-movflags",
+      "+faststart",
+      "-y",
+      out
+    ] : baseArgs;
     await new Promise((resolve, reject) => {
       const proc = spawn(ffmpegPath, ffArgs, { stdio: ["ignore", "ignore", "pipe"] });
       let stderrData = "";

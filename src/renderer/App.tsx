@@ -36,8 +36,13 @@ export default function App() {
   const [absTime, setAbsTime] = useState(0)
   const [isRecording, setIsRecording] = useState(false)
 
+  // Export resolution preset
+  type ResPreset = 'source' | '720p' | '1080p'
+  const [timelineRes, setTimelineRes] = useState<ResPreset>('source')
+
   const videoRef = useRef<HTMLVideoElement>(null)
   const lastBlobUrlRef = useRef<string | null>(null)
+  const playThroughRef = useRef(false)  // when true, auto-play after switching clips
   
   // Wrapped setAbsTime that marks it as a user action from timeline
   const setAbsTimeFromUser = (t: number) => {
@@ -226,6 +231,66 @@ export default function App() {
     }
   }, [src, absTime, selectedClip, sequenceSpans.arr])
 
+  // Auto-resume playback after clip switch (separate effect for clarity)
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || !selectedClip || !src) return
+
+    // Only auto-play if we explicitly set playThroughRef (during auto-advance)
+    if (playThroughRef.current) {
+      console.log('[Auto-resume] Starting auto-resume for:', selectedClip.name)
+      playThroughRef.current = false
+      
+      // Multiple strategies to ensure playback resumes
+      const attemptPlay = () => {
+        if (!v) return
+        console.log('[Auto-resume] Attempting play, readyState:', v.readyState, 'paused:', v.paused)
+        const playPromise = v.play()
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => console.log('[Auto-resume] Play succeeded'))
+            .catch(err => console.error('[Auto-resume] Play failed:', err))
+        }
+      }
+      
+      // Strategy 1: Try with a small delay to let DOM settle
+      setTimeout(() => {
+        if (v.readyState >= 2) {
+          console.log('[Auto-resume] Video ready, playing after delay')
+          attemptPlay()
+        }
+      }, 50)
+      
+      // Strategy 2: Listen for loadedmetadata
+      const onLoaded = () => {
+        console.log('[Auto-resume] loadedmetadata fired')
+        v.removeEventListener('loadedmetadata', onLoaded)
+        setTimeout(attemptPlay, 50)
+      }
+      v.addEventListener('loadedmetadata', onLoaded)
+      
+      // Strategy 3: Listen for canplay as backup
+      const onCanPlay = () => {
+        console.log('[Auto-resume] canplay fired')
+        v.removeEventListener('canplay', onCanPlay)
+        setTimeout(attemptPlay, 50)
+      }
+      v.addEventListener('canplay', onCanPlay)
+      
+      // Cleanup after 3 seconds
+      const cleanup = setTimeout(() => {
+        v.removeEventListener('loadedmetadata', onLoaded)
+        v.removeEventListener('canplay', onCanPlay)
+      }, 3000)
+      
+      return () => {
+        clearTimeout(cleanup)
+        v.removeEventListener('loadedmetadata', onLoaded)
+        v.removeEventListener('canplay', onCanPlay)
+      }
+    }
+  }, [selectedClip, src])
+
   // Seek video when absTime changes (scrubbing) - only when paused
   useEffect(() => {
     const v = videoRef.current
@@ -263,6 +328,28 @@ export default function App() {
       const local = v.currentTime
       const calculatedAbs = startAbs + Math.max(0, local - selectedClip.in)
       setAbsTime(calculatedAbs)
+
+      // Auto-advance when we hit the clip's out
+      const epsilon = 0.15 // ~4-5 frames for better detection
+      if (local >= (selectedClip.out - epsilon)) {
+        console.log('[Auto-advance] Boundary reached, advancing to next clip')
+        // find next block
+        const idx = sequenceSpans.arr.findIndex(b => b.id === selectedClip.id)
+        const next = sequenceSpans.arr[idx + 1]
+        if (next) {
+          console.log('[Auto-advance] Next clip:', next.clip.name, 'Setting playThroughRef=true')
+          // Mark that we should continue playing after clip switch
+          playThroughRef.current = true
+          // Pause to prevent looping at boundary
+          v.pause()
+          // Switch to next clip
+          setSelectedId(next.id)
+          setAbsTime(next.start)
+        } else {
+          // no next clip -> stop
+          v.pause()
+        }
+      }
     }
     
     v.addEventListener('timeupdate', tick)
@@ -285,15 +372,17 @@ export default function App() {
     const name = (p.split(/[\\/]/).pop() || 'clip')
     const color = COLORS[(clips.length) % COLORS.length]
 
-    // Probe duration by loading into a temp <video> in memory:
-    const duration = await probeDuration(p)
+    // Probe duration and resolution by loading into a temp <video> in memory:
+    const meta = await probeMedia(p)
 
     const next: Clip = {
       id, name, path: p,
       in: 0,
-      out: Math.max(0.05, duration || 1),
-      duration: duration || 1,
+      out: Math.max(0.05, meta.duration || 1),
+      duration: meta.duration || 1,
       color,
+      width: meta.width,
+      height: meta.height,
     }
     setClips(prev => [...prev, next])
     setSelectedId(id)
@@ -303,55 +392,32 @@ export default function App() {
     setAbsTime(total)
   }
 
-  // Probe duration by reading bytes and loading a blob URL
-  const probeDuration = async (path: string): Promise<number> => {
+  // Probe media metadata (duration + resolution) by reading bytes and loading a blob URL
+  const probeMedia = async (path: string): Promise<{ duration: number; width?: number; height?: number }> => {
     try {
-      console.log('[probeDuration] Reading file:', path)
       // @ts-expect-error preload
       const bytes: Uint8Array = await window.clipforge.readFileBytes(path)
-      console.log('[probeDuration] Read', bytes.length, 'bytes')
-      
       const blob = new Blob([bytes], { type: mimeFor(path) })
       const url = URL.createObjectURL(blob)
       const v = document.createElement('video')
       v.preload = 'metadata'
-      
-      return await new Promise<number>((resolve) => {
-        let resolved = false
-        const cleanup = () => { 
-          if (!resolved) {
-            resolved = true
-            URL.revokeObjectURL(url)
-          }
-        }
-        
-        // Timeout after 10 seconds
-        const timeout = setTimeout(() => {
-          console.warn('[probeDuration] Timeout for', path)
-          cleanup()
-          resolve(0)
-        }, 10000)
-        
-        v.onloadedmetadata = () => { 
-          clearTimeout(timeout)
+      return await new Promise((resolve) => {
+        let done = false
+        const cleanup = () => { if (!done) { done = true; URL.revokeObjectURL(url) } }
+        const to = setTimeout(() => { cleanup(); resolve({ duration: 0 }) }, 10000)
+        v.onloadedmetadata = () => {
+          clearTimeout(to)
           const d = Number(v.duration)
-          console.log('[probeDuration] Duration:', d, 'for', path)
+          const width = v.videoWidth || undefined
+          const height = v.videoHeight || undefined
           cleanup()
-          resolve(Number.isFinite(d) && d > 0 ? d : 0)
+          resolve({ duration: (Number.isFinite(d) && d > 0) ? d : 0, width, height })
         }
-        
-        v.onerror = (e) => { 
-          clearTimeout(timeout)
-          console.error('[probeDuration] Error loading:', e)
-          cleanup()
-          resolve(0)
-        }
-        
+        v.onerror = () => { clearTimeout(to); cleanup(); resolve({ duration: 0 }) }
         v.src = url
       })
-    } catch (err) {
-      console.error('[probeDuration] Exception:', err)
-      return 0
+    } catch {
+      return { duration: 0 }
     }
   }
 
@@ -365,31 +431,31 @@ export default function App() {
     // Calculate where new clip will start
     const currentTotal = sequenceSpans.total
 
-    // Probe duration - wait for file to be fully written and closed
+    // Probe duration and resolution - wait for file to be fully written and closed
     console.log('[handleRecordingComplete] Waiting 1s for file to be written...')
     await new Promise(resolve => setTimeout(resolve, 1000))
     
-    let duration = await probeDuration(filePath)
-    console.log('[handleRecordingComplete] First probe result:', duration)
+    let meta = await probeMedia(filePath)
+    console.log('[handleRecordingComplete] First probe result:', meta)
     
     // If duration probe failed, try again with longer delay
-    if (duration < 0.5) {
+    if (meta.duration < 0.5) {
       console.log('[handleRecordingComplete] Duration too small, retrying in 2s...')
       await new Promise(resolve => setTimeout(resolve, 2000))
-      duration = await probeDuration(filePath)
-      console.log('[handleRecordingComplete] Second probe result:', duration)
+      meta = await probeMedia(filePath)
+      console.log('[handleRecordingComplete] Second probe result:', meta)
     }
 
     // If still failed, try one more time
-    if (duration < 0.5) {
+    if (meta.duration < 0.5) {
       console.log('[handleRecordingComplete] Still too small, final retry in 2s...')
       await new Promise(resolve => setTimeout(resolve, 2000))
-      duration = await probeDuration(filePath)
-      console.log('[handleRecordingComplete] Final probe result:', duration)
+      meta = await probeMedia(filePath)
+      console.log('[handleRecordingComplete] Final probe result:', meta)
     }
 
     // Ensure minimum duration of 5 seconds if probe failed
-    const finalDuration = duration > 0.5 ? duration : 5
+    const finalDuration = meta.duration > 0.5 ? meta.duration : 5
     console.log('[handleRecordingComplete] Using duration:', finalDuration)
 
     const next: Clip = {
@@ -398,6 +464,8 @@ export default function App() {
       out: finalDuration,
       duration: finalDuration,
       color,
+      width: meta.width,
+      height: meta.height,
     }
     
     console.log('[handleRecordingComplete] Adding clip:', next)
@@ -512,8 +580,14 @@ export default function App() {
         tIn: b.clip.in,
         tOut: b.clip.out,
       }))
+
+      const targetHeight =
+        timelineRes === '720p' ? 720 :
+        timelineRes === '1080p' ? 1080 :
+        0 // 0 = source (no scaling)
+
       // @ts-expect-error preload
-      const bytes: Uint8Array = await window.clipforge.exportTimeline(parts, 22)
+      const bytes: Uint8Array = await window.clipforge.exportTimeline(parts, 22, targetHeight)
       const suggested = 'timeline_export.mp4'
       // @ts-expect-error preload
       const res = await window.clipforge.saveBytes(suggested, bytes)
@@ -534,6 +608,21 @@ export default function App() {
         <button onClick={onImport}>➕ Import</button>
         <button onClick={splitAtPlayhead} disabled={!selectedId}>✂️ Split</button>
         <button onClick={deleteSelected} disabled={!selectedId}>🗑️ Delete</button>
+        
+        {/* Resolution preset for export */}
+        <label className="meta" style={{ marginLeft: 8 }}>
+          Export res:{' '}
+          <select
+            value={timelineRes}
+            onChange={e => setTimelineRes(e.target.value as ResPreset)}
+            style={{ fontSize: 12 }}
+          >
+            <option value="source">Source</option>
+            <option value="720p">720p</option>
+            <option value="1080p">1080p</option>
+          </select>
+        </label>
+        
         <button onClick={exportSelected} disabled={!selectedClip}>💾 Export MP4 (selected)</button>
         <button onClick={exportTimeline} disabled={!clips.length}>📤 Export Timeline</button>
         <span className="meta">{working}</span>
@@ -545,7 +634,6 @@ export default function App() {
             ref={videoRef}
             src={src || undefined}
             controls
-            autoPlay
             muted={isRecording}
             playsInline
             style={{ 

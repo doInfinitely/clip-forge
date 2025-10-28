@@ -10,6 +10,8 @@ export type Clip = {
   out: number
   duration: number
   color: string
+  width?: number
+  height?: number
 }
 
 type Props = {
@@ -246,10 +248,17 @@ export default function TimelineCanvas({
                 }}
               />
               <Text
-                x={10} y={CLIP_Y + 18}
+                x={10} y={CLIP_Y + 16}
                 text={c.name}
                 fontSize={12}
                 fill="#111"
+                listening={false}
+              />
+              <Text
+                x={10} y={CLIP_Y + 34}
+                text={`${(c.duration).toFixed(2)}s` + (c.width && c.height ? ` • ${c.width}×${c.height}` : '')}
+                fontSize={10}
+                fill="#333"
                 listening={false}
               />
               {/* left handle */}
